@@ -26,7 +26,7 @@ async function download(page: Page, name: string) {
 
 test('ambiguous CSV requires delimiter confirmation and preserves decimal commas in the exported source', async ({ page }) => {
   await importCsv(page, 'Region;Revenue, EUR\nWest;12,50\nEast;8,75')
-  await expect(page.getByRole('alert')).toContainText('Comma and Semicolon both fit')
+  await expect(page.getByRole('alert')).toContainText('Comma and Semicolon are plausible delimiters')
   await expect(build(page)).toBeDisabled()
   await page.getByRole('combobox', { name: 'Delimiter' }).selectOption(';')
   await expect(schemaRow(page, 'Revenue, EUR').getByText('€12.50', { exact: true })).toBeVisible()
@@ -35,6 +35,23 @@ test('ambiguous CSV requires delimiter confirmation and preserves decimal commas
   await expect(page.locator('.stat-card').getByText('€21.25', { exact: true })).toBeVisible()
   const rows = await download(page, 'Filtered rows (CSV)')
   expect((await readFile(await rows.path(), 'utf8')).trim()).toBe('Region,"Revenue, EUR"\r\nWest,"12,50"\r\nEast,"8,75"')
+})
+
+test('short CSV rows cannot silently select a delimiter that changes amounts', async ({ page }) => {
+  await importCsv(page, 'Region;Revenue, EUR\nWest;12,50\nEast;8,75\nDepot, North\nDepot, East\nDepot, South\nDepot, West', 'delimiter-short-rows.csv')
+  await expect(page.getByRole('alert')).toContainText('Choose a delimiter')
+  await expect(build(page)).toBeDisabled()
+  await page.getByRole('combobox', { name: 'Delimiter' }).selectOption(';')
+  await expect(page.locator('.schema-row')).toHaveCount(2)
+  await expect(page.getByText('4 short rows were padded with missing cells.')).toBeVisible()
+  await build(page).click()
+  await page.getByRole('combobox', { name: 'Aggregation' }).selectOption('sum')
+  await expect(page.locator('.featured-stat').getByText('€21.25', { exact: true })).toBeVisible()
+  await expect(page.getByText('6 rows · 2 columns')).toBeVisible()
+  const rows = await download(page, 'Filtered rows (CSV)')
+  expect((await readFile(await rows.path(), 'utf8')).trim().split('\r\n')).toEqual([
+    'Region,"Revenue, EUR"', 'West,"12,50"', 'East,"8,75"', '"Depot, North",', '"Depot, East",', '"Depot, South",', '"Depot, West",',
+  ])
 })
 
 test('currency correction excludes conflicting and unmarked USD amounts and keeps normalized exports in EUR', async ({ page }) => {
@@ -124,6 +141,55 @@ test('review and browser history preserve analysis scope, while conflicting chan
   const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Reopen spreadsheet' }).click()])
   await chooser.setFiles({ name: 'reopened.csv', mimeType: 'text/csv', buffer: Buffer.from('Region,Revenue\nWest,21') })
   await expect(page.getByRole('heading', { name: 'Review your columns' })).toBeVisible()
+})
+
+test('resetting or leaving a schema draft preserves the valid filter and exported rows', async ({ page }) => {
+  await importCsv(page, 'Region,Revenue (EUR)\nWest,12.5\nEast,25.5')
+  await build(page).click()
+  await filterToggle(page).click()
+  await conditionColumn(page).selectOption({ label: 'Revenue (EUR)' })
+  await operator(page).selectOption('gt')
+  await page.getByRole('textbox', { name: 'Value', exact: true }).fill('15')
+  await apply(page).click()
+  const before = await download(page, 'Filtered rows (CSV)')
+  const expected = (await readFile(await before.path(), 'utf8')).trim()
+  expect(expected).toBe('Region,Revenue (EUR)\r\nEast,25.5')
+
+  for (const leave of ['apply', 'back']) {
+    await page.getByRole('link', { name: 'Edit columns' }).click()
+    await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('comma')
+    await expect(schemaRow(page, 'Revenue (EUR)').getByText('2 invalid')).toBeVisible()
+    if (leave === 'apply') {
+      await page.getByRole('button', { name: 'Reset types' }).click()
+      await expect(schemaRow(page, 'Revenue (EUR)').getByText('€25.50', { exact: true })).toBeVisible()
+      await build(page).click()
+    } else {
+      await page.goBack()
+    }
+    await expect(page.getByText('1 of 2 rows', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Confirm export scope' })).toHaveCount(0)
+    const after = await download(page, 'Filtered rows (CSV)')
+    expect((await readFile(await after.path(), 'utf8')).trim()).toBe(expected)
+  }
+})
+
+test('history cannot open a replacement dataset under an earlier dashboard entry', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Try sample data' }).click()
+  await expect(page.getByRole('heading', { name: 'Retail sales', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'New import' }).click()
+  await page.getByRole('button', { name: /^Warehouse inventory/ }).click()
+  await expect(page.getByRole('heading', { name: 'Warehouse inventory', exact: true })).toBeVisible()
+  await page.goBack()
+  await expect(page.getByRole('heading', { name: 'Import a spreadsheet' })).toBeVisible()
+  await page.goBack()
+  await expect(page.getByText('This workspace was replaced.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Warehouse inventory', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Reopen spreadsheet' })).toBeVisible()
+  await page.goForward()
+  await expect(page.getByRole('heading', { name: 'Import a spreadsheet' })).toBeVisible()
+  await page.goForward()
+  await expect(page.getByRole('heading', { name: 'Warehouse inventory', exact: true })).toBeVisible()
 })
 
 test('phone review shows the controls, paired values and quality, and table cells remain readable through scrolling', async ({ page }) => {

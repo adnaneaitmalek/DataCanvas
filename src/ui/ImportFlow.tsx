@@ -26,8 +26,9 @@ function ImportMessage({ busy, error, onCancel }: { busy: string; error: string;
   </>
 }
 
-export function ImportPage({ onFile, onSample, busy, error, onCancel, recovering }: {
-  onFile: (file: File) => void; onSample: (sample: SampleId) => void; busy: string; error: string; onCancel: () => void; recovering: boolean
+export function ImportPage({ onFile, onSample, busy, error, onCancel, recovering, replaced }: {
+  onFile: (file: File) => void; onSample: (sample: SampleId) => void; busy: string; error: string; onCancel: () => void
+  recovering: boolean; replaced: boolean
 }) {
   const input = useRef<HTMLInputElement>(null)
   const dragDepth = useRef(0)
@@ -45,8 +46,9 @@ export function ImportPage({ onFile, onSample, busy, error, onCancel, recovering
       <h1 tabIndex={-1}>Import a spreadsheet</h1>
       <p>Choose a file to review its columns and build your dashboard.</p>
     </div>
-    {recovering && <div className="notice scope-notice" role="status"><Info size={18} />
-      <div><strong>Reopen your analysis</strong><p>Analysis lives in this tab’s memory and clears when the page reloads. Reopen your spreadsheet to start a new session.</p></div>
+    {(recovering || replaced) && <div className="notice scope-notice" role="status"><Info size={18} />
+      <div>{replaced ? <><strong>This workspace was replaced.</strong><p>Reopen the spreadsheet or choose its sample to start a new session. Use Current dashboard to return to the active analysis when available.</p></>
+        : <><strong>Reopen your analysis</strong><p>Analysis lives in this tab’s memory and clears when the page reloads. Reopen your spreadsheet to start a new session.</p></>}</div>
       <button type="button" className="button secondary" disabled={Boolean(busy)} onClick={() => input.current?.click()}>Reopen spreadsheet</button>
     </div>}
     <div className="import-layout">
@@ -122,7 +124,7 @@ export function ReviewPage({ source, dataset, edits, settings, onUpdate, onSheet
     <Steps step={2} />
     <div className="flow-heading">
       <h1 tabIndex={-1}>Review your columns</h1>
-      <p>Check the inferred types before using your data in charts and filters.</p>
+      <p>Check the inferred types. Build dashboard applies the reviewed columns.</p>
     </div>
     <div className="panel review-file">
       <FileIdentity name={source.filename} detail={`${integer.format(source.rows.length)} rows · ${source.headers.length} columns`} />
@@ -141,7 +143,7 @@ export function ReviewPage({ source, dataset, edits, settings, onUpdate, onSheet
     </div>
     <ImportMessage busy={busy} error={error} onCancel={onCancel} />
     {unresolved && dialect && <p className="notice" role="alert"><Info size={18} />
-      <span>{dialect.ambiguous.map(value => delimiterLabels[value]).join(' and ')} both fit this file. The preview uses {delimiterLabels[dialect.delimiter].toLowerCase()}. Choose a delimiter and check the interpreted values before continuing.</span>
+      <span>{new Intl.ListFormat('en').format(dialect.ambiguous.map(value => delimiterLabels[value]))} are plausible delimiters. The preview uses {delimiterLabels[dialect.delimiter].toLowerCase()}. Choose a delimiter and check the interpreted values before continuing.</span>
     </p>}
     {(source.notices.length > 0 || issues.length > 0) && <div className="notice review-issues"><Info size={18} />
       <div role="status">{source.notices.map(notice => <p key={notice}>{notice}</p>)}

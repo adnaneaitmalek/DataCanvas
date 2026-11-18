@@ -91,7 +91,7 @@ export function DataTable({ source, dataset, rows, state, onChange, renderExport
           return <th key={column.index} scope="col" className={isMeasure(column.kind) ? 'numeric-cell' : undefined}
             aria-sort={active ? sort.ascending ? 'ascending' : 'descending' : undefined}>
             <button type="button" onClick={() => onChange({ sort: { column: column.index, ascending: !active || !sort.ascending }, page: 0 })}>
-              {label(column.index)}<SortIcon size={13} />
+              <span title={label(column.index)}>{label(column.index)}</span><SortIcon size={13} />
             </button>
           </th>
         })}</tr></thead>

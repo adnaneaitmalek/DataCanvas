@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent, PointerEvent } from 'react'
 import { ChartNoAxesCombined } from 'lucide-react'
-import { coverageLabel } from '../data/analyze'
+import { coverageLabel, sparseCoverageNote } from '../data/analyze'
 import { formatValue, integer } from '../data/model'
 import { barLayout, chartLayout, groupLabel } from './chartLayout'
 import type { ChartSpec } from './chartLayout'
@@ -99,6 +99,7 @@ function TemporalChart({ data, type, period, metric, title, interactive = true }
     ? `${integer.format(selected.records)} ${selected.records === 1 ? 'record' : 'records'}${selected.records !== selected.valid ? ` · ${integer.format(selected.valid)} with values` : ''}` : ''
   const coverage = selected?.coverage ? coverageLabel(selected.coverage) : ''
   const partials = data.filter(point => point.coverage?.partial)
+  const sparse = sparseCoverageNote(data, period)
 
   return <div className={`chart-frame${hasValues ? '' : ' chart-empty'}`} ref={frame}
     tabIndex={interactive && hasValues ? 0 : undefined} role={interactive ? 'group' : undefined}
@@ -148,9 +149,9 @@ function TemporalChart({ data, type, period, metric, title, interactive = true }
           <span>{caption}</span><strong>{selected.value === null ? 'No valid values' : value}</strong><small>{records}</small>
           {coverage && <small>{coverage}</small>}
         </div>}
-        {partials.length > 0 && <div className="chart-coverage">{partials.map(point => <p key={point.key}>
+        {(partials.length > 0 || sparse) && <div className="chart-coverage">{partials.map(point => <p key={point.key}>
           <span className="partial-swatch" aria-hidden="true" /> <strong>Partial {period}</strong> · {coverageLabel(point.coverage!)}
-        </p>)}</div>}
+        </p>)}{sparse && <p className="sparse-coverage">{sparse}</p>}</div>}
       </>}
     </> : <><ChartNoAxesCombined size={25} aria-hidden="true" /><strong>No values to chart</strong><span>Adjust your filters, grouping, or metric.</span></>}
   </div>

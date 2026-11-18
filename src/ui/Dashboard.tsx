@@ -21,7 +21,7 @@ import { DataTable } from './DataTable'
 import type { TableExport } from './DataTable'
 import { FilterButton, FilterPanel } from './FilterPanel'
 import type { Report, Stat } from './report'
-import { closePopover, Field, Popover, Select } from './shared'
+import { closePopover, Field, Popover, Select, WorkspaceLink } from './shared'
 
 const MAX_GROUPS = 12
 const MAX_PERIODS = 36
@@ -106,8 +106,9 @@ export function DashboardPreview() {
   </div>
 }
 
-export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis }: {
+export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis, onReview }: {
   source: Source; dataset: Dataset; title: string; sample: boolean; analysis: AnalysisState; onAnalysis: (patch: Partial<AnalysisState>) => void
+  onReview: () => void
 }) {
   const dates = dataset.columns.filter(column => column.kind === 'date' && column.invalid + column.missing < dataset.rows.length)
   const dimensions = dataset.columns.filter(column => column.kind === 'category')
@@ -253,7 +254,7 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
         </div></div>
       <div className="workspace-actions">
         <a className="button secondary new-import" href="#/import"><Upload size={16} /> New import</a>
-        <a className="button secondary" href="#/review"><Settings2 size={16} /> Edit columns</a>
+        <WorkspaceLink route="review" onFollow={onReview}><Settings2 size={16} /> Edit columns</WorkspaceLink>
         {tab === 'overview' && exportMenu()}
       </div>
     </div>
@@ -316,7 +317,7 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
           {dateGroup && shown.length > 0 && <details className="chart-values">
             <summary>View chart values ({shown.length})</summary>
             <dl>{shown.map((point, index) => <div key={index}>
-              <dt>{groupLabel(point.key, chartSpec.period, true)}{point.coverage?.partial && <small>{coverageLabel(point.coverage)}</small>}</dt>
+              <dt>{groupLabel(point.key, chartSpec.period, true)}{point.coverage && point.coverage.days < point.coverage.periodDays && <small>{coverageLabel(point.coverage)}</small>}</dt>
               <dd>{formatValue(point.value, displayColumn)}</dd>
             </div>)}</dl>
           </details>}

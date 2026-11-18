@@ -81,6 +81,21 @@ export function coverageLabel(coverage: Coverage) {
   return `${observedDateRange(coverage)} · ${coverage.days} of ${coverage.periodDays} ${coverage.periodDays === 1 ? 'day' : 'days'} observed`
 }
 
+export function sparseCoverageNote(data: Datum[], period: Granularity | undefined) {
+  if (!period) return ''
+  const sparse = data.flatMap(({ coverage }) => coverage && !coverage.partial && coverage.days < coverage.periodDays ? [coverage] : [])
+  const first = sparse[0]
+  if (!first) return ''
+  const scope = `${sparse.length} displayed ${period}${sparse.length === 1 ? '' : 's'}`
+  const sameCoverage = sparse.every(({ days, periodDays }) => days === first.days && periodDays === first.periodDays)
+  if (sameCoverage) return `Dated records cover ${first.days} of ${first.periodDays} days in ${scope}.`
+  const days = sparse.map(coverage => coverage.days)
+  const min = Math.min(...days)
+  const max = Math.max(...days)
+  const range = min === max ? String(min) : `${min}–${max}`
+  return `Dated records cover ${range} days per period in ${scope}.`
+}
+
 export function chooseGranularity(rows: Cell[][], column: number): Granularity {
   let first = ''
   let last = ''

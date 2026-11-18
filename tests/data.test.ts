@@ -44,6 +44,19 @@ describe('spreadsheet import', () => {
     expect(readDelimited('sep=;\n' + text, 'excel.csv').dialect).toEqual({ delimiter: ';', ambiguous: [] })
   })
 
+  it('flags a competing delimiter when complete records corroborate a layout with short rows', () => {
+    const input = 'Region;Revenue, EUR\nWest;12,50\nEast;8,75\nDepot, North\nDepot, East\nDepot, South\nDepot, West'
+    expect(readDelimited(input, 'short-rows.csv').dialect?.ambiguous).toEqual([',', ';'])
+    const source = readDelimited(input, 'short-rows.csv', false, ';')
+    expect(source.headers).toEqual(['Region', 'Revenue, EUR'])
+    expect(source.rows).toEqual([
+      ['West', '12,50'], ['East', '8,75'], ['Depot, North', null], ['Depot, East', null],
+      ['Depot, South', null], ['Depot, West', null],
+    ])
+    const dataset = profile(source)
+    expect(total(dataset.rows, { column: 1, aggregation: 'sum' })).toMatchObject({ value: 21.25, valid: 2, records: 6 })
+  })
+
   it('honors Excel separator directives and preserves quoted records across chunks', () => {
     expect(readDelimited('\uFEFFsep=;\r\nDate;Spending\r\n2025-02-14;23,45', 'excel.csv').rows)
       .toEqual([['2025-02-14', '23,45']])

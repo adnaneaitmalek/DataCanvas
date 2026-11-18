@@ -1,5 +1,5 @@
 import { downloadFile } from '../data/export'
-import { coverageLabel } from '../data/analyze'
+import { coverageLabel, sparseCoverageNote } from '../data/analyze'
 import { formatValue } from '../data/model'
 import type { Datum } from '../data/analyze'
 import { barLayout, breakdownLayout, chartColors, chartLayout, groupLabel } from './chartLayout'
@@ -212,15 +212,18 @@ function reportCanvas(report: Report, lines: string[]) {
 
   const chartWidth = report.chart && report.breakdown ? 810 : usable
   if (report.chart) {
-    const partials = report.chart.data.flatMap(point => point.coverage?.partial ? [point.coverage] : [])
+    const { data, period } = report.chart
+    const partials = data.flatMap(point => point.coverage?.partial ? [point.coverage] : [])
+    const sparse = sparseCoverageNote(data, period)
     box(ctx, margin, 296, chartWidth, 428)
     text(report.chart.title, margin + 18, 331, 19, ink, chartWidth - 36, 680)
     ctx.save()
     ctx.translate(margin + 12, 348)
-    drawChart(ctx, report.chart, chartWidth - 24, partials.length ? 315 : 353)
+    drawChart(ctx, report.chart, chartWidth - 24, partials.length || sparse ? 315 : 353)
     ctx.restore()
-    partials.forEach((coverage, i) => text(`Partial ${report.chart!.period} · ${coverageLabel(coverage)}`,
+    partials.forEach((coverage, i) => text(`Partial ${period} · ${coverageLabel(coverage)}`,
       margin + 18, 681 + i * 18, 12, chartColors.partial, chartWidth - 36))
+    if (sparse) text(sparse, margin + 18, 681 + partials.length * 18, 12, muted, chartWidth - 36)
   }
   if (report.breakdown) {
     const x = report.chart ? margin + chartWidth + 14 : margin

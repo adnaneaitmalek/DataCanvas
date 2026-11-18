@@ -52,23 +52,23 @@ export function toSource(matrix: SourceCell[][], metadata: ImportMetadata, stric
 
 function detectSeparator(text: string): NonNullable<Source['dialect']> {
   const sample = text.slice(0, 128 * 1024)
-  let selected: Delimiter = ','
-  let best = -1
-  const plausible: Delimiter[] = []
+  const candidates: { delimiter: Delimiter; score: number; plausible: boolean }[] = []
   for (const delimiter of Object.keys(delimiterLabels) as Delimiter[]) {
     const { data: [header, ...rows], errors } = Papa.parse<string[]>(sample, { delimiter, preview: 33, skipEmptyLines: 'greedy' })
     if (!header || header.length <= 1) continue
     const consistent = rows.filter(row => row.length === header.length).length
+    const usable = rows.filter(row => row.length <= header.length).length
     const confidence = rows.length === 0 ? 1 : consistent / rows.length
     // A truncated sample can end in a quoted field. Earlier quote errors still count against the delimiter.
-    const score = confidence - (errors.some(error => error.type === 'Quotes' && (error.row ?? 0) < rows.length) ? 1 : 0)
-    if (score >= 0.9 && consistent > 0) plausible.push(delimiter)
-    if (score > best) {
-      selected = delimiter
-      best = score
-    }
+    const brokenQuotes = errors.some(error => error.type === 'Quotes' && (sample.length === text.length || (error.row ?? 0) < rows.length))
+    const score = confidence - Number(brokenQuotes)
+    // The importer can pad short records. A competing layout supported by complete
+    // records still needs confirmation when most of its rows can be imported.
+    candidates.push({ delimiter, score, plausible: !brokenQuotes && header.length <= limits.columns && consistent > 0 && usable >= rows.length * 0.75 })
   }
-  return { delimiter: selected, ambiguous: plausible.length > 1 ? plausible : [] }
+  const plausible = candidates.filter(candidate => candidate.plausible)
+  const [selected] = [...(plausible.length ? plausible : candidates)].sort((a, b) => b.score - a.score)
+  return { delimiter: selected?.delimiter ?? ',', ambiguous: plausible.length > 1 ? plausible.map(candidate => candidate.delimiter) : [] }
 }
 
 export function readDelimited(text: string, filename: string, tsv = false, preferred?: Delimiter): Source {

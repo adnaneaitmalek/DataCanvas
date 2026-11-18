@@ -13,6 +13,16 @@ export function Brand() {
   </a>
 }
 
+export function WorkspaceLink({ route, onFollow, children }: {
+  route: 'review' | 'dashboard'; onFollow: () => void; children: ReactNode
+}) {
+  return <a className="button secondary" href={`#/${route}`} onClick={event => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    onFollow()
+  }}>{children}</a>
+}
+
 export function Select({ children, className = '', ...props }: ComponentProps<'select'>) {
   return <span className={`select-wrap ${className}`}><select {...props}>{children}</select><ChevronDown size={14} aria-hidden="true" /></span>
 }

@@ -88,12 +88,12 @@ test('explains the partial week on keyboard and touch without covering the plot'
   }
 })
 
-test('triages a 38-column phone import and keeps row identity when jumping across the table', async ({ page }, info) => {
+test('triages 38 columns on phones and keeps wide tables readable across viewports', async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  const headers = ['Notes', ...Array.from({ length: 35 }, (_, i) => `Amount ${i + 1}`), 'Order date', 'Amount 36']
+  const headers = ['Notes', 'Region', 'Completion %', ...Array.from({ length: 33 }, (_, i) => `Attribute ${i + 1}`), 'Order date', 'Amount 36']
   const long = 'Check the shipment notes before approving the next workflow. '.repeat(4).trim()
   const rows = ['2025-01-01', '2025-01-02', '2025-02-31'].map((date, i) =>
-    [long, ...Array.from({ length: 35 }, (_, j) => (i + 2) * (j + 7)), date, (i + 3) * 7].join(','))
+    [long, regions[i], `${i * 10 + 25}%`, ...Array.from({ length: 33 }, (_, j) => (i + 2) * (j + 7)), date, (i + 3) * 7].join(','))
   await importCsv(page, 'wide-import.csv', [headers.join(','), ...rows].join('\n'))
   await expect(page.locator('.schema-compact')).toHaveCount(37)
   await expect(build(page)).toBeInViewport()
@@ -125,6 +125,30 @@ test('triages a 38-column phone import and keeps row identity when jumping acros
   expect(await table.getByRole('cell', { name: '21', exact: true }).last().evaluate(node => getComputedStyle(node).textAlign)).toBe('right')
   await fit(page, 390)
   await page.screenshot({ path: info.outputPath('wide-table.png') })
+  for (const width of [768, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.getByRole('combobox', { name: 'Jump to column' }).selectOption({ label: 'Attribute 33' })
+    await expect(table.getByRole('button', { name: 'Attribute 33', exact: true })).toBeInViewport()
+    for (const name of ['Region', 'Completion %', 'Attribute 33']) {
+      const header = await table.getByRole('columnheader', { name, exact: true }).boundingBox()
+      expect(header!.height).toBeLessThan(58)
+      expect(header!.width).toBeGreaterThanOrEqual(128)
+    }
+    expect((await identity.boundingBox())!.x).toBeCloseTo((await table.boundingBox())!.x, 0)
+    await fit(page, width)
+    await page.screenshot({ path: info.outputPath(`wide-table-${width}.png`) })
+    await page.getByRole('combobox', { name: 'Jump to column' }).selectOption({ label: 'Notes' })
+  }
+})
+
+test('states sparse observation coverage even when both calendar boundaries are present', async ({ page }) => {
+  await importCsv(page, 'sparse-traffic.csv', 'Date,Sessions\n2025-01-06,35\n2025-01-12,42\n2025-01-13,31\n2025-01-19,47')
+  await build(page).click()
+  await page.getByRole('combobox', { name: 'Date granularity' }).selectOption('week')
+  await expect(page.locator('.partial-edge')).toHaveCount(0)
+  await expect(page.locator('.chart-coverage')).toContainText('Dated records cover 2 of 7 days in 2 displayed weeks.')
+  await page.locator('.chart-values summary').click()
+  await expect(page.locator('.chart-values dl')).toContainText(/Jan 13.*Jan 19, 2025.*2 of 7 days observed/)
 })
 
 test('keeps a long filename inspectable and the leading metric readable on phones', async ({ page }, info) => {

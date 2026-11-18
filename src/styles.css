@@ -376,6 +376,7 @@ summary::-webkit-details-marker { display: none; }
 .chart-readout small { font-size: 11px; }
 .chart-coverage { display: grid; gap: 5px; margin: 0 5px 9px; color: #6c4c22; font-size: 11px; line-height: 1.45; }
 .partial-swatch { display: inline-block; width: 16px; border-block-start: 2px dashed #976629; margin-right: 3px; vertical-align: middle; }
+.sparse-coverage { color: var(--muted); }
 .chart-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; min-height: 214px; color: var(--muted); font-size: 13px; text-align: center; }
 .chart-empty strong, .chart-empty svg { color: var(--accent); }
 .chart-note { margin: 0 19px 13px; color: var(--quiet); font-size: 11px; line-height: 1.5; }
@@ -438,7 +439,9 @@ summary::-webkit-details-marker { display: none; }
 .table-panel th.row-number { font-weight: 500; }
 .table-panel .numeric-cell { text-align: right; }
 .table-panel .numeric-cell > span { margin-left: auto; }
-.table-panel th button { max-width: min(38ch, 75vw); text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.table-panel .data-table th:not(:first-child), .table-panel .data-table td { min-width: 128px; }
+.table-panel th button { max-width: min(38ch, 75vw); text-align: left; white-space: normal; }
+.table-panel th button span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .table-panel .scalar-cell > span { white-space: nowrap; overflow-wrap: normal; }
 .table-navigation { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 7px 14px; padding: 0 12px 9px; }
 .table-navigation .field { flex: 0 1 185px; }
@@ -469,8 +472,6 @@ summary::-webkit-details-marker { display: none; }
   .schema-settings .select-wrap select { min-height: 40px; font-size: 13px; }
   .schema-examples { padding: 8px 10px; border-radius: 7px; background: #f6f8f5; }
   .workspace .chart-grid:not(.single-chart) { grid-template-columns: minmax(0, 1fr); }
-  .table-panel .data-table th:not(:first-child), .table-panel .data-table td:not(:first-child) { min-width: 128px; }
-  .table-panel th button { white-space: nowrap; overflow-wrap: normal; }
   .scope-notice { flex-wrap: wrap; }
 }
 @media (max-width: 700px) {
