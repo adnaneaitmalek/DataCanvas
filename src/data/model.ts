@@ -25,6 +25,9 @@ export type DateOrder = 'auto' | 'mdy' | 'dmy'
 export type Settings = { numberStyle: NumberStyle; dateOrder: DateOrder }
 export const defaultSettings: Settings = { numberStyle: 'auto', dateOrder: 'auto' }
 
+export const delimiterLabels = { ',': 'Comma', ';': 'Semicolon', '\t': 'Tab', '|': 'Pipe' } as const
+export type Delimiter = keyof typeof delimiterLabels
+
 export type Source = {
   filename: string
   headers: string[]
@@ -32,6 +35,7 @@ export type Source = {
   notices: string[]
   sheet?: string
   sheets?: string[]
+  dialect?: { delimiter: Delimiter; ambiguous: Delimiter[] }
 }
 
 export type Column = {
@@ -42,9 +46,14 @@ export type Column = {
   missing: number
   invalid: number
   note?: string
+  numberStyle?: NumberStyle
+  dateOrder?: DateOrder
+  percentScale?: 'points' | 'fraction'
+  allowUnmarked?: boolean
+  excludedUnmarked?: number
 }
 
-export type SchemaEdit = { kind: Kind; unit?: string; percentScale?: 'points' | 'fraction' }
+export type SchemaEdit = { kind: Kind; unit?: string; percentScale?: 'points' | 'fraction'; assignUnmarked?: boolean }
 export type Edits = Record<number, SchemaEdit>
 export type Dataset = { columns: Column[]; rows: Cell[][] }
 

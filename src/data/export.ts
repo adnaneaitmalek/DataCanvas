@@ -1,5 +1,5 @@
 import type { Datum } from './analyze'
-import { headerUnit } from './currency'
+import { columnLabel } from './currency'
 import { sourceValue } from './model'
 import type { Cell, Column, SourceCell } from './model'
 
@@ -32,19 +32,14 @@ export function chartCsv(group: string, label: string, data: Datum[], unit?: str
 }
 
 export function typedCsv(columns: Column[], rows: Cell[][]) {
-  const headers = columns.map(({ name, kind, unit }) => {
-    if (kind === 'percent' && !/[%٪]|\bpercent(?:age)?\b/i.test(name)) return `${name} (%)`
-    if (kind === 'currency' && unit && headerUnit(name) !== unit) return `${name} (${unit})`
-    return name
-  })
-  return csv(uniqueHeaders(headers), rows)
+  return csv(uniqueHeaders(columns.map(columnLabel)), rows)
 }
 
 export function downloadCsv(name: string, text: string) {
   downloadFile(name, 'csv', new Blob([text], { type: 'text/csv;charset=utf-8' }))
 }
 
-export function downloadFile(name: string, extension: 'csv' | 'png' | 'pdf', blob: Blob) {
+export function downloadFile(name: string, extension: 'csv' | 'png' | 'pdf' | 'html', blob: Blob) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url

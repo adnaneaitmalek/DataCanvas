@@ -1,6 +1,6 @@
 import Papa from 'papaparse'
-import { integer, limits, sourceValue, validateFile } from './model'
-import type { Source, SourceCell } from './model'
+import { delimiterLabels, integer, limits, sourceValue, validateFile } from './model'
+import type { Delimiter, Source, SourceCell } from './model'
 
 type ImportMetadata = Omit<Source, 'headers' | 'rows'>
 
@@ -50,32 +50,39 @@ export function toSource(matrix: SourceCell[][], metadata: ImportMetadata, stric
   return { ...metadata, headers, rows, notices }
 }
 
-const separators = [',', ';', '\t', '|']
-
-function detectSeparator(text: string): string {
+function detectSeparator(text: string): NonNullable<Source['dialect']> {
   const sample = text.slice(0, 128 * 1024)
-  let selected = ','
+  let selected: Delimiter = ','
   let best = -1
-  for (const delimiter of separators) {
-    const { data: [header, ...rows] } = Papa.parse<string[]>(sample, { delimiter, preview: 33, skipEmptyLines: 'greedy' })
+  const plausible: Delimiter[] = []
+  for (const delimiter of Object.keys(delimiterLabels) as Delimiter[]) {
+    const { data: [header, ...rows], errors } = Papa.parse<string[]>(sample, { delimiter, preview: 33, skipEmptyLines: 'greedy' })
     if (!header || header.length <= 1) continue
     const consistent = rows.filter(row => row.length === header.length).length
     const confidence = rows.length === 0 ? 1 : consistent / rows.length
-    if (confidence > best) { selected = delimiter; best = confidence }
+    // A truncated sample can end in a quoted field. Earlier quote errors still count against the delimiter.
+    const score = confidence - (errors.some(error => error.type === 'Quotes' && (error.row ?? 0) < rows.length) ? 1 : 0)
+    if (score >= 0.9 && consistent > 0) plausible.push(delimiter)
+    if (score > best) {
+      selected = delimiter
+      best = score
+    }
   }
-  return selected
+  return { delimiter: selected, ambiguous: plausible.length > 1 ? plausible : [] }
 }
 
-export function readDelimited(text: string, filename: string, tsv = false): Source {
+export function readDelimited(text: string, filename: string, tsv = false, preferred?: Delimiter): Source {
   if (text.includes('\u0000')) throw new Error('This text file contains invalid characters. Save it as a UTF-8 CSV or TSV and try again.')
   text = text.replace(/^\uFEFF/, '')
   const directive = !tsv ? /^sep=([,;|\t])(?:\r\n|\n|\r)/i.exec(text) : null
   if (directive) text = text.slice(directive[0].length)
+  const fixed = preferred ?? (tsv ? '\t' : directive?.[1] as Delimiter | undefined)
+  const dialect = fixed ? { delimiter: fixed, ambiguous: [] } : detectSeparator(text)
   const matrix: string[][] = []
   let problem: string | undefined
   // Papa's StringStreamer supports chunk callbacks for decoded strings as well.
   const options: Papa.ParseConfig<string[]> & { chunkSize: number; chunk: (result: Papa.ParseResult<string[]>, parser: Papa.Parser) => void } = {
-    delimiter: tsv ? '\t' : directive?.[1] ?? detectSeparator(text),
+    delimiter: dialect.delimiter,
     chunkSize: 128 * 1024,
     skipEmptyLines: 'greedy',
     chunk(result, parser) {
@@ -97,10 +104,10 @@ export function readDelimited(text: string, filename: string, tsv = false): Sour
   }
   Papa.parse<string[]>(text, options)
   if (problem) throw new Error(problem)
-  return toSource(matrix, { filename, notices: [] }, true)
+  return toSource(matrix, { filename, notices: [], dialect }, true)
 }
 
-export async function readSource(file: File, sheet?: string): Promise<Source> {
+export async function readSource(file: File, sheet?: string, delimiter?: Delimiter): Promise<Source> {
   const extension = validateFile(file.name, file.size)
   if (extension === 'xlsx') {
     const { readWorkbook } = await import('./workbook')
@@ -116,5 +123,5 @@ export async function readSource(file: File, sheet?: string): Promise<Source> {
   } catch {
     throw new Error('This file uses an unsupported text encoding. Save it as UTF-8 CSV or TSV and retry.')
   }
-  return readDelimited(text, file.name, extension === 'tsv')
+  return readDelimited(text, file.name, extension === 'tsv', delimiter)
 }

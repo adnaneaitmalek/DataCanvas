@@ -11,6 +11,8 @@ import { loadSample, samples } from '../src/data/samples'
 import { readWorkbook } from '../src/data/workbook'
 import { chartLayout } from '../src/ui/chartLayout'
 import { imagePdf } from '../src/ui/pdfImage'
+import { initialAnalysis, reconcileAnalysis } from '../src/data/analysisState'
+import { columnLabel } from '../src/data/currency'
 
 describe('spreadsheet import', () => {
   it('keeps quoted commas and multiline cells while reporting malformed rows', () => {
@@ -26,6 +28,20 @@ describe('spreadsheet import', () => {
     expect(readDelimited('Team;Amount\nDesign;15,20\nOps;21,40', 'expenses.csv').rows[0]).toEqual(['Design', '15,20'])
     expect(readDelimited('ID\tName\tname\t\n001\tSam\tPark\tyes', 'list.tsv', true).headers).toEqual(['ID', 'Name', 'name (2)', 'Column 4'])
     expect(readDelimited('Amount\n3\n4', 'single.csv').rows).toEqual([['3'], ['4']])
+  })
+
+  it('surfaces competing delimiter interpretations and keeps decimal commas after an explicit choice', () => {
+    const text = 'Region;Revenue, EUR\nWest;12,50\nEast;8,75'
+    expect(readDelimited(text, 'sales.csv').dialect?.ambiguous).toEqual([',', ';'])
+    const fixed = readDelimited(text, 'sales.csv', false, ';')
+    expect(fixed.dialect).toEqual({ delimiter: ';', ambiguous: [] })
+    expect(fixed.headers).toEqual(['Region', 'Revenue, EUR'])
+    const dataset = profile(fixed)
+    expect(dataset.columns.map(columnLabel)).toEqual(['Region', 'Revenue (EUR)'])
+    expect(total(dataset.rows, defaultMetric(dataset.columns)).value).toBe(21.25)
+    expect(readDelimited('Region,Notes\nWest,"Review; approved"\nEast,"Paid, in full"', 'comma.csv').dialect)
+      .toEqual({ delimiter: ',', ambiguous: [] })
+    expect(readDelimited('sep=;\n' + text, 'excel.csv').dialect).toEqual({ delimiter: ';', ambiguous: [] })
   })
 
   it('honors Excel separator directives and preserves quoted records across chunks', () => {
@@ -184,6 +200,32 @@ describe('column inference', () => {
     expect(edited.columns[0].invalid).toBe(1)
   })
 
+  it('keeps unmarked USD out of EUR totals unless it is explicitly reassigned', () => {
+    const source = readDelimited('Region,Revenue (USD)\nEast,EUR 10\nWest,EUR 20\nEast,USD 500\nWest,700', 'mixed.csv')
+    const confirmed = profile(source, { 1: { kind: 'currency', unit: 'EUR' } })
+    expect(confirmed.rows).toEqual([['East', 10], ['West', 20], ['East', null], ['West', null]])
+    expect(confirmed.columns[1]).toMatchObject({ excludedUnmarked: 1, invalid: 2, allowUnmarked: false })
+    expect(typedCsv(confirmed.columns, confirmed.rows).split('\r\n')[0]).toBe('\uFEFFRegion,Revenue (EUR)')
+    expect(csv(source.headers, source.rows)).toContain('West,700')
+    const allowed = profile(source, { 1: { kind: 'currency', unit: 'EUR', assignUnmarked: true } })
+    expect(total(allowed.rows, defaultMetric(allowed.columns)).value).toBe(730)
+  })
+
+  it('applies comma-decimal filters to the same units as import and reconciles only affected conditions', () => {
+    const source = readDelimited('Region;Revenue (EUR)\nA;1,25\nB;1.250,00\nC;2,00', 'costs.csv')
+    const dataset = profile(source, {}, { numberStyle: 'comma', dateOrder: 'auto' })
+    const bound = parseFilter({ column: 1, operator: 'eq', value: '1,250', end: '' }, dataset.columns[1])
+    expect(filterRows(dataset, [bound])).toEqual([['A', 1.25]])
+    const region: Filter = { column: 0, operator: 'eq', value: 'A' }
+    const view = { ...initialAnalysis(dataset), filters: [bound, region], tab: 'table' as const, table: { query: 'A', page: 0, raw: true } }
+    const same = reconcileAnalysis(dataset, profile(source), view)
+    expect(same).toEqual(view)
+    const changed = reconcileAnalysis(dataset, profile(source, { 1: { kind: 'text' } }), view)
+    expect(changed.filters).toEqual([region])
+    expect(changed.removedFilters).toEqual(['Revenue (EUR) equals 1,25 EUR'])
+    expect(changed.table).toEqual(view.table)
+  })
+
   it('uses the selected percentage scale for plain values and keeps explicit percentages as written', () => {
     const source = readDelimited('Completion %\n0.25\n50%\n(10%)\n0', 'completion.csv')
     expect(profile(source).rows).toEqual([[0.25], [50], [-10], [0]])
@@ -216,12 +258,28 @@ describe('aggregation, filtering, and exports', () => {
     expect(total([[null]], { column: 0, aggregation: 'sum' }).value).toBeNull()
     const result = groupRows(dataset.rows, revenue, dataset.columns[0], 'month')
     expect(result).toEqual({ groups: [
-      { key: '2025-01-01', value: 17, valid: 2, records: 3 },
-      { key: '2025-02-01', value: -4, valid: 1, records: 1 },
+      { key: '2025-01-01', value: 17, valid: 2, records: 3,
+        coverage: { first: '2025-01-01', last: '2025-01-20', days: 3, periodDays: 31, partial: true } },
+      { key: '2025-02-01', value: -4, valid: 1, records: 1,
+        coverage: { first: '2025-02-01', last: '2025-02-01', days: 1, periodDays: 28, partial: true } },
     ], excluded: 1 })
     expect(partitionDate('2025-01-01', 'week')).toBe('2024-12-30')
     expect(partitionDate('2025-08-21', 'quarter')).toBe('2025-07-01')
     expect(recommendedAggregation(dataset.columns[3])).toBe('average')
+  })
+
+  it('counts distinct observed dates and marks only periods cut off at the boundaries', () => {
+    const source = readDelimited('Date,Sessions\n2024-12-30,4\n2024-12-31,6\n2025-01-05,2\n2025-01-03,8\n2025-01-08,9\n2025-01-13,7\n2025-01-13,3\n2025-01-14,4', 'traffic.csv')
+    const { rows, columns } = profile(source)
+    const { groups } = groupRows(rows, { column: 1, aggregation: 'sum' }, columns[0], 'week')
+    expect(groups).toEqual([
+      { key: '2024-12-30', value: 20, records: 4, valid: 4,
+        coverage: { first: '2024-12-30', last: '2025-01-05', days: 4, periodDays: 7, partial: false } },
+      { key: '2025-01-06', value: 9, records: 1, valid: 1,
+        coverage: { first: '2025-01-08', last: '2025-01-08', days: 1, periodDays: 7, partial: false } },
+      { key: '2025-01-13', value: 14, records: 3, valid: 3,
+        coverage: { first: '2025-01-13', last: '2025-01-14', days: 2, periodDays: 7, partial: true } },
+    ])
   })
 
   it('combines exact category, dates, missing and numerical filters', () => {
@@ -291,11 +349,13 @@ describe('dashboard outputs', () => {
 
   it('writes PDF cross-reference offsets in bytes, including binary JPEG content', async () => {
     const fakeJpeg = Uint8Array.of(0xff, 0xd8, 0xff, 0xd9)
-    const bytes = new Uint8Array(await imagePdf(fakeJpeg, 2400, 1500).arrayBuffer())
+    const page = { jpeg: fakeJpeg, width: 2400, height: 1500 }
+    const bytes = new Uint8Array(await imagePdf([page, page]).arrayBuffer())
     const text = new TextDecoder('latin1').decode(bytes)
     const xref = Number(/startxref\n(\d+)/.exec(text)?.[1])
     expect(text.slice(xref, xref + 4)).toBe('xref')
-    const entries = text.slice(xref).split('\n').slice(3, 8)
+    expect(text).toContain('/Count 2')
+    const entries = text.slice(xref).split('\n').slice(3, 11)
     for (const [index, entry] of entries.entries()) {
       const offset = Number(entry.slice(0, 10))
       expect(text.slice(offset, offset + 7)).toBe(`${index + 1} 0 obj`)

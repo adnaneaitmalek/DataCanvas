@@ -1,11 +1,13 @@
 import { isMeasure } from './model'
+import { measureName } from './currency'
 import type { Cell, Column } from './model'
 
 export type Aggregation = 'count' | 'sum' | 'average' | 'min' | 'max'
 export type Granularity = 'day' | 'week' | 'month' | 'quarter' | 'year'
 export type ChartType = 'line' | 'bar'
 export type Metric = { column: number | null; aggregation: Aggregation }
-export type Datum = { key: string | null; value: number | null; records: number; valid: number }
+export type Coverage = { first: string; last: string; days: number; periodDays: number; partial: boolean }
+export type Datum = { key: string | null; value: number | null; records: number; valid: number; coverage?: Coverage }
 
 export const aggregations: Record<Aggregation, string> = { count: 'Count', sum: 'Sum', average: 'Average', min: 'Minimum', max: 'Maximum' }
 export const periods: Record<Granularity, string> = { day: 'Day', week: 'Week', month: 'Month', quarter: 'Quarter', year: 'Year' }
@@ -28,7 +30,7 @@ export function defaultMetric(columns: Column[], rowCount = Infinity): Metric {
 export function metricLabel(metric: Metric, column?: Column) {
   if (!column) return 'Records'
   const labels: Record<Aggregation, string> = { count: 'Count of', sum: 'Total', average: 'Avg.', min: 'Min.', max: 'Max.' }
-  const label = column.name.replace(/\s*\((?:[A-Z]{3}|[$€£%])\)\s*$/, '') || column.name
+  const label = column.kind === 'currency' ? measureName(column.name) : column.name.replace(/\s*\(%\)\s*$/, '') || column.name
   return `${labels[metric.aggregation]} ${label.replace(/^[A-Z](?=[a-z])/, letter => letter.toLowerCase())}`
 }
 
@@ -57,6 +59,26 @@ export function dateLabel(key: string, period: Granularity, full = false): strin
   if (period === 'quarter') return `Q${Math.ceil(Number(key.slice(5, 7)) / 3)} ${key.slice(0, 4)}`
   const formatter = period === 'month' ? (full ? dateFormats.monthYear : dateFormats.month) : (full ? dateFormats.dayYear : dateFormats.day)
   return formatter.format(new Date(`${key}T00:00:00Z`))
+}
+
+const dayMs = 86_400_000
+
+function endOfPeriod(key: string, period: Granularity) {
+  const start = Date.parse(key)
+  if (period === 'day') return start
+  if (period === 'week') return start + 6 * dayMs
+  const months = { month: 1, quarter: 3, year: 12 }
+  return Date.UTC(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1 + months[period], 1) - dayMs
+}
+
+function observedDateRange(coverage: Coverage) {
+  const { first, last } = coverage
+  return first === last ? dateLabel(last, 'day', true)
+    : `${dateLabel(first, 'day', first.slice(0, 4) !== last.slice(0, 4))} – ${dateLabel(last, 'day', true)}`
+}
+
+export function coverageLabel(coverage: Coverage) {
+  return `${observedDateRange(coverage)} · ${coverage.days} of ${coverage.periodDays} ${coverage.periodDays === 1 ? 'day' : 'days'} observed`
 }
 
 export function chooseGranularity(rows: Cell[][], column: number): Granularity {
@@ -118,6 +140,7 @@ export function total(rows: Cell[][], metric: Metric): Datum {
 export function groupRows(rows: Cell[][], metric: Metric, group: Column | undefined, period: Granularity) {
   const buckets = new Map<string | null, Stats>()
   const partitions = new Map<string, string>()
+  const observed = new Map<string, { first: string; last: string; days: number }>()
   let excluded = 0
   for (const row of rows) {
     const cell = group ? row[group.index] : 'All records'
@@ -128,8 +151,18 @@ export function groupRows(rows: Cell[][], metric: Metric, group: Column | undefi
     let key = cell === null ? null : String(cell)
     if (group?.kind === 'date' && key !== null) {
       const date = key
-      key = partitions.get(date) ?? partitionDate(date, period)
-      partitions.set(date, key)
+      const partition = partitions.get(date)
+      key = partition ?? partitionDate(date, period)
+      if (!partition) {
+        partitions.set(date, key)
+        const range = observed.get(key)
+        if (!range) observed.set(key, { first: date, last: date, days: 1 })
+        else {
+          if (date < range.first) range.first = date
+          if (date > range.last) range.last = date
+          range.days++
+        }
+      }
     }
     let stats = buckets.get(key)
     if (!stats) {
@@ -142,6 +175,18 @@ export function groupRows(rows: Cell[][], metric: Metric, group: Column | undefi
   groups.sort(group?.kind === 'date'
     ? (a, b) => a.key! < b.key! ? -1 : a.key! > b.key! ? 1 : 0
     : (a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity) || String(a.key).localeCompare(String(b.key)))
+  if (group?.kind === 'date') {
+    groups.forEach((datum, index) => {
+      const key = datum.key!
+      const range = observed.get(key)!
+      const end = endOfPeriod(key, period)
+      const boundary = index === 0 || index === groups.length - 1
+      datum.coverage = {
+        ...range, periodDays: (end - Date.parse(key)) / dayMs + 1,
+        partial: boundary && (range.first > key || Date.parse(range.last) < end),
+      }
+    })
+  }
   return { groups, excluded }
 }
 

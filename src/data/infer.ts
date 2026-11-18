@@ -1,4 +1,4 @@
-import { currencyParts, headerUnit, unitsMatch } from './currency'
+import { currencyParts, headerUnit, resolveMarker } from './currency'
 import { defaultSettings, sourceValue } from './model'
 import type { Cell, Column, Dataset, DateOrder, Edits, Kind, NumberStyle, Source, SourceCell } from './model'
 
@@ -117,23 +117,29 @@ function columnDateOrder(values: SourceCell[], explicit: DateOrder): DateOrder {
   return evidence.size === 1 ? [...evidence][0] : 'auto'
 }
 
-function mapValue(value: SourceCell, kind: Kind, unit: string | undefined, numberStyle: NumberStyle, order: DateOrder, fractional: boolean): Cell {
+function marker(value: SourceCell) {
+  if (value && typeof value === 'object') return value.unit === '%' ? undefined : value.unit
+  return typeof value === 'string' ? currencyParts(value)?.unit : undefined
+}
+
+function mapValue(value: SourceCell, column: Column, declared?: string): Cell {
+  const { kind, unit, numberStyle = 'auto', dateOrder = 'auto', percentScale, allowUnmarked } = column
   if (value === null) return null
   if (kind === 'text' || kind === 'identifier' || kind === 'category') return String(sourceValue(value))
   if (typeof value === 'object') {
-    if (kind === 'currency' && unit && unitsMatch(value.unit, unit) || kind === 'percent' && value.unit === '%') return usableNumber(value.amount)
+    if (kind === 'currency' && resolveMarker(value.unit, declared ?? unit) === unit || kind === 'percent' && value.unit === '%') return usableNumber(value.amount)
     return null
   }
-  if (kind === 'date') return parseDate(value, order)
-  if (kind === 'currency' && typeof value === 'string') {
-    const money = currencyParts(value)
-    if (money && (!unit || !unitsMatch(money.unit, unit))) return null
+  if (kind === 'date') return parseDate(value, dateOrder)
+  if (kind === 'currency') {
+    const money = typeof value === 'string' ? currencyParts(value) : undefined
+    if (money ? resolveMarker(money.unit, declared ?? unit) !== unit : !allowUnmarked) return null
     return parseNumber(money?.amount ?? value, numberStyle)
   }
   if (kind === 'percent') {
     const labeled = typeof value === 'string' && percentMarker.test(value)
     const parsed = parseNumber(labeled ? String(value).replace(/\s*[%٪]/, '') : value, numberStyle)
-    return parsed !== null && fractional && !labeled ? usableNumber(parsed * 100) : parsed
+    return parsed !== null && percentScale === 'fraction' && !labeled ? usableNumber(parsed * 100) : parsed
   }
   return parseNumber(value, numberStyle)
 }
@@ -163,7 +169,7 @@ function infer(values: SourceCell[], name: string, style: NumberStyle, order: Da
   if (fits(dates)) return { kind: 'date' }
   if (fits(percentCells) || /[%٪]|\bpercent(?:age)?\b/i.test(name)) return { kind: 'percent' }
   const known = headerUnit(name)
-  if (known === '¥' || (known ? [...units].some(unit => !unitsMatch(unit, known)) : units.size > 1 || units.has('¥'))) {
+  if (known === '¥' || (known ? [...units].some(unit => resolveMarker(unit, known) !== known) : units.size > 1 || units.has('¥'))) {
     return { kind: 'text', note: 'Mixed or ambiguous currency units. Choose one currency to analyze compatible values.' }
   }
   if (known || fits(currencyCells)) return {
@@ -187,13 +193,28 @@ export function profile(source: Source, edits: Edits = {}, settings = defaultSet
     const guess = infer(nonempty, name, style, order)
     const kind = edits[index]?.kind ?? guess.kind
     const unit = kind === 'currency' ? (edits[index]?.unit ?? guess.unit ?? '$') : undefined
-    let invalid = 0
+    const declared = kind === 'currency' ? headerUnit(name) : undefined
+    const allowUnmarked = kind !== 'currency' ? undefined : edits[index]?.assignUnmarked === true ||
+      (declared ? resolveMarker(declared, unit) === unit && (declared === unit || declared !== '¥')
+        : !nonempty.some(value => {
+          const evidence = marker(value)
+          return evidence !== undefined && resolveMarker(evidence, unit) !== unit
+        }))
+    const column: Column = {
+      index, name, kind, unit, missing: raw.length - nonempty.length, invalid: 0, note: edits[index] ? undefined : guess.note,
+      numberStyle: style, dateOrder: order, percentScale: kind === 'percent' ? edits[index]?.percentScale ?? 'points' : undefined,
+      allowUnmarked,
+    }
     raw.forEach((value, rowIndex) => {
-      const typed = mapValue(value, kind, unit, style, order, edits[index]?.percentScale === 'fraction')
-      if (value !== null && typed === null) invalid++
+      const typed = mapValue(value, column, declared && declared !== '$' && declared !== '¥' ? declared : undefined)
+      if (value !== null && typed === null) {
+        column.invalid++
+        if (allowUnmarked === false && (typeof value === 'string' || typeof value === 'number') &&
+          !marker(value) && parseNumber(value, style) !== null) column.excludedUnmarked = (column.excludedUnmarked ?? 0) + 1
+      }
       rows[rowIndex].push(typed)
     })
-    return { index, name, kind, unit, missing: raw.length - nonempty.length, invalid, note: edits[index] ? undefined : guess.note }
+    return column
   })
   return { columns, rows }
 }

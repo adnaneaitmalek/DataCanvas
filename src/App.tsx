@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUpRight, LockKeyhole } from 'lucide-react'
+import { initialAnalysis, reconcileAnalysis } from './data/analysisState'
+import type { AnalysisState } from './data/analysisState'
 import { profile } from './data/infer'
 import { defaultSettings, validateFile } from './data/model'
 import type { WorkRequest, WorkResult } from './data/import.worker'
-import type { Dataset, Edits, Settings, Source } from './data/model'
+import type { Dataset, Delimiter, Edits, Settings, Source } from './data/model'
 import { loadSample } from './data/samples'
 import type { SampleId } from './data/samples'
 import { Dashboard } from './ui/Dashboard'
@@ -11,7 +13,10 @@ import { ImportPage, ReviewPage } from './ui/ImportFlow'
 import { Landing } from './ui/Landing'
 import { Brand } from './ui/shared'
 
-type DocumentData = { source: Source; dataset: Dataset; title: string; sample?: SampleId; file?: File; revision: number }
+type DocumentData = {
+  source: Source; dataset: Dataset; title: string; sample?: SampleId; file?: File;
+  analysis: AnalysisState; hasDashboard: boolean
+}
 type Route = 'home' | 'import' | 'review' | 'dashboard'
 
 function routeFromHash(): Route {
@@ -26,10 +31,25 @@ export function App() {
   const [settings, setSettings] = useState<Settings>(defaultSettings)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  const [recovering, setRecovering] = useState(false)
   const worker = useRef<Worker | undefined>(undefined)
-  const revision = useRef(0)
   const previousRoute = useRef<Route | undefined>(undefined)
-  const view = (route === 'review' || route === 'dashboard') && !documentData ? 'import' : route
+  const lostSession = (route === 'review' || route === 'dashboard') && !documentData
+  const unresolvedDelimiter = Boolean(documentData?.source.dialect?.ambiguous.length)
+  const view = lostSession ? 'import' : route === 'dashboard' && unresolvedDelimiter ? 'review' : route
+
+  useEffect(() => {
+    if (route === view) return
+    if (lostSession) setRecovering(true)
+    window.history.replaceState(window.history.state, '', `#/${view}`)
+    setRoute(view)
+  }, [route, view, lostSession])
+
+  useEffect(() => {
+    if (view === 'dashboard') {
+      setDocumentData(current => current && !current.hasDashboard ? { ...current, hasDashboard: true } : current)
+    }
+  }, [view])
 
   const stopRead = useCallback(() => {
     worker.current?.terminate()
@@ -69,7 +89,9 @@ export function App() {
     setError('')
     setEdits({})
     setSettings(defaultSettings)
-    setDocumentData({ ...loadSample(id), revision: ++revision.current })
+    setRecovering(false)
+    const sample = loadSample(id)
+    setDocumentData({ ...sample, analysis: initialAnalysis(sample.dataset), hasDashboard: true })
     window.location.hash = '/dashboard'
   }
 
@@ -101,7 +123,7 @@ export function App() {
     }
   }
 
-  function readFile(file: File, sheet?: string) {
+  function readFile(file: File, sheet?: string, delimiter?: Delimiter) {
     try {
       validateFile(file.name, file.size)
     } catch (problem) {
@@ -109,11 +131,19 @@ export function App() {
       setError(problem instanceof Error ? problem.message : 'This file could not be opened.')
       return
     }
-    runWorker({ kind: 'import', file, sheet }, `Reading ${sheet || file.name}`, ({ source, dataset }) => {
+    const previous = delimiter && documentData?.file === file ? documentData : undefined
+    const nextSettings = previous ? settings : defaultSettings
+    runWorker({ kind: 'import', file, sheet, delimiter, settings: nextSettings }, `Reading ${sheet || file.name}`, ({ source, dataset }) => {
       if (!source) return
       setEdits({})
-      setSettings(defaultSettings)
-      setDocumentData({ source, dataset, file, revision: ++revision.current, title: source.sheet || file.name.replace(/\.[^.]+$/, '') })
+      setSettings(nextSettings)
+      setRecovering(false)
+      setDocumentData({
+        source, dataset, file, title: source.sheet || file.name.replace(/\.[^.]+$/, ''),
+        hasDashboard: Boolean(previous?.hasDashboard),
+        analysis: previous?.hasDashboard
+          ? reconcileAnalysis(previous.dataset, dataset, previous.analysis, true) : initialAnalysis(dataset),
+      })
       window.location.hash = '/review'
     })
   }
@@ -124,7 +154,8 @@ export function App() {
     const apply = (dataset: Dataset) => {
       setEdits(nextEdits)
       setSettings(nextSettings)
-      setDocumentData({ ...documentData, dataset, revision: ++revision.current })
+      setDocumentData(current => current && { ...current, dataset, analysis: current.hasDashboard
+        ? reconcileAnalysis(current.dataset, dataset, current.analysis) : initialAnalysis(dataset) })
     }
     if (source.rows.length * source.headers.length > 30_000) {
       runWorker({ kind: 'profile', source, edits: nextEdits, settings: nextSettings }, 'Checking column types', result => apply(result.dataset))
@@ -142,16 +173,18 @@ export function App() {
         <div className="app-header-inner"><Brand />
           <div className="app-header-right">
             <span><LockKeyhole size={14} /> Local workspace</span>
-            {view === 'import' && documentData && <a className="button secondary" href="#/dashboard">Dashboard <ArrowUpRight size={15} /></a>}
+            {view === 'import' && documentData?.hasDashboard && <a className="button secondary" href="#/dashboard">Current dashboard <ArrowUpRight size={15} /></a>}
           </div>
         </div>
       </header>
-      {view === 'import' && <ImportPage onFile={readFile} onSample={chooseSample} {...message} />}
+      {view === 'import' && <ImportPage recovering={recovering || lostSession} onFile={readFile} onSample={chooseSample} {...message} />}
       {view === 'review' && documentData && <ReviewPage source={documentData.source} dataset={documentData.dataset} edits={edits} settings={settings}
-        onUpdate={updateSchema} onContinue={() => { window.location.hash = '/dashboard' }}
+        onUpdate={updateSchema} onContinue={() => { if (!unresolvedDelimiter) window.location.hash = '/dashboard' }}
+        onDelimiter={delimiter => { if (documentData.file) readFile(documentData.file, undefined, delimiter) }}
         onSheet={sheet => { if (documentData.file) readFile(documentData.file, sheet) }} {...message} />}
-      {view === 'dashboard' && documentData && <Dashboard key={documentData.revision} source={documentData.source}
-        dataset={documentData.dataset} sample={Boolean(documentData.sample)} title={documentData.title} />}
+      {view === 'dashboard' && documentData && <Dashboard source={documentData.source}
+        dataset={documentData.dataset} sample={Boolean(documentData.sample)} title={documentData.title} analysis={documentData.analysis}
+        onAnalysis={patch => setDocumentData(current => current && { ...current, analysis: { ...current.analysis, ...patch } })} />}
     </>}
   </>
 }

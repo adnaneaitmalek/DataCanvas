@@ -16,6 +16,7 @@ export function Landing({ onSample }: { onSample: (sample: SampleId) => void }) 
         <Brand />
         <nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#sample-data">Sample data</a></nav>
         <a className="button secondary nav-action" href="#/import">Open workspace <ArrowRight size={15} /></a>
+        <a className="button secondary nav-samples" href="#sample-data">Sample data <ArrowDown size={15} /></a>
       </div>
     </header>
     <main id="main">
