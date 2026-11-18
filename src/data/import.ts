@@ -1,11 +1,11 @@
 import Papa from 'papaparse'
-import { integer, limits, validateFile } from './model'
-import type { Cell, Source } from './model'
+import { integer, limits, sourceValue, validateFile } from './model'
+import type { Source, SourceCell } from './model'
 
 type ImportMetadata = Omit<Source, 'headers' | 'rows'>
 
-export function toSource(matrix: Cell[][], metadata: ImportMetadata, strictWidth = false): Source {
-  const populated = matrix.filter(row => row.some(value => value !== null && String(value).trim() !== ''))
+export function toSource(matrix: SourceCell[][], metadata: ImportMetadata, strictWidth = false): Source {
+  const populated = matrix.filter(row => row.some(value => value !== null && String(sourceValue(value)).trim() !== ''))
   if (!populated.length) throw new Error('No data was found. Put column names on the first non-empty row.')
   const [header, ...body] = populated
   const width = header.length
@@ -17,7 +17,7 @@ export function toSource(matrix: Cell[][], metadata: ImportMetadata, strictWidth
   const used = new Set<string>()
   let renamed = 0
   const headers = Array.from({ length: width }, (_, i) => {
-    const original = String(header[i] ?? '').trim()
+    const original = String(sourceValue(header[i]) ?? '').trim()
     if (original.length > limits.cellLength) throw new Error('A column header exceeds 32,767 characters. Shorten it and retry.')
     const base = original || `Column ${i + 1}`
     let name = base
@@ -30,7 +30,7 @@ export function toSource(matrix: Cell[][], metadata: ImportMetadata, strictWidth
 
   let short = 0
   let long = 0
-  const rows: Cell[][] = []
+  const rows: SourceCell[][] = []
   for (const row of body) {
     if (row.length > width) {
       long++
@@ -50,22 +50,54 @@ export function toSource(matrix: Cell[][], metadata: ImportMetadata, strictWidth
   return { ...metadata, headers, rows, notices }
 }
 
+const separators = [',', ';', '\t', '|']
+
+function detectSeparator(text: string): string {
+  const sample = text.slice(0, 128 * 1024)
+  let selected = ','
+  let best = -1
+  for (const delimiter of separators) {
+    const { data: [header, ...rows] } = Papa.parse<string[]>(sample, { delimiter, preview: 33, skipEmptyLines: 'greedy' })
+    if (!header || header.length <= 1) continue
+    const consistent = rows.filter(row => row.length === header.length).length
+    const confidence = rows.length === 0 ? 1 : consistent / rows.length
+    if (confidence > best) { selected = delimiter; best = confidence }
+  }
+  return selected
+}
+
 export function readDelimited(text: string, filename: string, tsv = false): Source {
   if (text.includes('\u0000')) throw new Error('This text file contains invalid characters. Save it as a UTF-8 CSV or TSV and try again.')
-  const parsed = Papa.parse<string[]>(text, {
-    delimiter: tsv ? '\t' : '',
-    delimitersToGuess: [',', ';', '\t', '|'],
-    preview: limits.rows + 2,
+  text = text.replace(/^\uFEFF/, '')
+  const directive = !tsv ? /^sep=([,;|\t])(?:\r\n|\n|\r)/i.exec(text) : null
+  if (directive) text = text.slice(directive[0].length)
+  const matrix: string[][] = []
+  let problem: string | undefined
+  // Papa's StringStreamer supports chunk callbacks for decoded strings as well.
+  const options: Papa.ParseConfig<string[]> & { chunkSize: number; chunk: (result: Papa.ParseResult<string[]>, parser: Papa.Parser) => void } = {
+    delimiter: tsv ? '\t' : directive?.[1] ?? detectSeparator(text),
+    chunkSize: 128 * 1024,
     skipEmptyLines: 'greedy',
-  })
-  const quoteError = parsed.errors.find(error => error.type === 'Quotes')
-  if (quoteError) {
-    throw new Error(`Invalid quoting near data record ${(quoteError.row ?? 0) + 1}. Fix the quotes in the file and try again.`)
+    chunk(result, parser) {
+      const quotes = result.errors.find(error => error.type === 'Quotes')
+      if (quotes) {
+        problem = `Invalid quoting near data record ${matrix.length + (quotes.row ?? 0) + 1}. Fix the quotes in the file and try again.`
+      } else {
+        for (const row of result.data) {
+          matrix.push(row)
+          const width = matrix[0].length
+          if (width > limits.columns) problem = `This sheet has more than ${limits.columns} columns. Remove unused columns and retry.`
+          else if (matrix.length > limits.rows + 1) problem = 'This file exceeds 100,000 data rows. Split it into smaller files and try again.'
+          else if ((matrix.length - 1) * width > limits.cells) problem = 'This sheet exceeds 1,000,000 cells. Split it into smaller files.'
+          if (problem) break
+        }
+      }
+      if (problem) parser.abort()
+    },
   }
-  if (parsed.meta.truncated || parsed.data.length > limits.rows + 1) {
-    throw new Error('This file exceeds 100,000 data rows. Split it into smaller files and try again.')
-  }
-  return toSource(parsed.data, { filename, notices: [] }, true)
+  Papa.parse<string[]>(text, options)
+  if (problem) throw new Error(problem)
+  return toSource(matrix, { filename, notices: [] }, true)
 }
 
 export async function readSource(file: File, sheet?: string): Promise<Source> {

@@ -1,127 +1,124 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent, PointerEvent } from 'react'
 import { ChartNoAxesCombined } from 'lucide-react'
-import { dateLabel, datePosition } from '../data/analyze'
-import type { ChartType, Datum, Granularity } from '../data/analyze'
 import { formatValue, integer } from '../data/model'
-import type { Column } from '../data/model'
+import { chartLayout, groupLabel } from './chartLayout'
+import type { ChartSpec } from './chartLayout'
 
-const LEFT = 62
-const RIGHT = 19
-const TOP = 15
-const BOTTOM = 35
+type Selection = { data: ChartSpec['data']; index: number; source: 'pointer' | 'keyboard' | 'touch' }
 
-function axis(min: number, max: number) {
-  const target = (max / 4 - min / 4) || 1
-  const factor = 10 ** Math.max(-300, Math.floor(Math.log10(target)))
-  const step = ([1, 2, 2.5, 5, 10].find(value => value >= target / factor) ?? 1) * factor
-  const floor = Math.floor(min / step) * step
-  const ceiling = Math.ceil(max / step) * step || (min < 0 ? 0 : step)
-  const ticks = Array.from({ length: Math.min(8, Math.round((ceiling - floor) / step) + 1) }, (_, i) => floor + i * step)
-  return { low: floor, high: ceiling, ticks }
-}
-
-export function Chart({ data, type, period, metric, title, interactive = true }: {
-  data: Datum[]; type: ChartType; period?: Granularity; metric?: Column; title: string; interactive?: boolean
-}) {
+export function Chart({ data, type, period, metric, title, interactive = true }: ChartSpec & { interactive?: boolean }) {
   const frame = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(680)
-  const [active, setActive] = useState<number | null>(null)
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight)
+  const [selection, setSelection] = useState<Selection>()
   const areaId = useId()
+  const hintId = useId()
   useEffect(() => {
     const element = frame.current
     if (!element) return
-    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(240, entry.contentRect.width)))
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0) setWidth(Math.max(200, Math.round(entry.contentRect.width)))
+    })
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
-
-  const height = width < 440 ? 214 : 268
-  const plotWidth = width - LEFT - RIGHT
-  const plotHeight = height - TOP - BOTTOM
-  const values = data.flatMap(point => point.value === null ? [] : [point.value])
-  const { low, high, ticks } = axis(Math.min(0, ...values), Math.max(0, ...values))
-  const y = (value: number) => TOP + (high - value) / (high - low || 1) * plotHeight
-  const slots = data.map((d, i) => period && d.key ? datePosition(d.key, period) : i)
-  const extent = Math.max(1, (slots.at(-1) ?? 0) - (slots[0] ?? 0))
-  const barStep = plotWidth / (period ? extent + 1 : Math.max(1, data.length))
-  const pointX = (i: number) => {
-    if (data.length === 1) return LEFT + plotWidth / 2
-    if (type === 'bar') return LEFT + barStep * ((period ? slots[i] - slots[0] : i) + 0.5)
-    return LEFT + ((slots[i] - slots[0]) / extent) * plotWidth
-  }
-  const points = data.map((datum, i) => ({ ...datum, x: pointX(i), y: datum.value === null ? null : y(datum.value) }))
-  const segments: { x: number; y: number }[][] = []
-  points.forEach((point, i) => {
-    if (point.y === null) return
-    if (i === 0 || points[i - 1].y === null || (period && slots[i] - slots[i - 1] > 1.01)) segments.push([])
-    segments.at(-1)?.push({ x: point.x, y: point.y })
-  })
-  const selected = active === null ? undefined : points[active]
-  const label = (key: string | null, full = false) => key === null ? '(Missing)' : period ? dateLabel(key, period, full) : key
-  const labelEvery = Math.max(1, Math.ceil(points.length / Math.max(2, Math.floor(plotWidth / (period ? 73 : 100)))))
-  const years = new Set(data.map(d => d.key?.slice(0, 4)))
-  const barWidth = Math.max(1, Math.min(56, barStep * 0.62))
-
-  function move(event: PointerEvent<HTMLDivElement>) {
+  useEffect(() => {
     if (!interactive) return
-    const x = event.clientX - event.currentTarget.getBoundingClientRect().left
-    let nearest = 0
+    const resize = () => setViewportHeight(window.innerHeight)
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
+  }, [interactive])
+
+  const heightLimit = width >= 640 ? Math.max(252, Math.min(392, viewportHeight - 585)) : 330
+  const height = interactive ? Math.round(Math.min(heightLimit, Math.max(206, width * 0.3 + 120))) : width < 440 ? 210 : 268
+  const layout = useMemo(() => chartLayout({ data, type, period, metric, title }, width, height), [data, type, period, metric, title, width, height])
+  const { hasValues, points, left, right, top, bottom, zero } = layout
+  const active = selection?.data === data ? selection : undefined
+  const selected = active ? points[active.index] : undefined
+  const tooltipWidth = Math.min(210, width - 12)
+
+  function pick(event: PointerEvent<HTMLDivElement>, source: 'pointer' | 'touch') {
+    if (!interactive || !hasValues || (event.pointerType === 'touch' && source === 'pointer')) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - bounds.left
+    const y = event.clientY - bounds.top
+    let index = 0
     points.forEach((point, i) => {
-      if (Math.abs(point.x - x) < Math.abs(points[nearest].x - x)) nearest = i
+      if (Math.abs(point.x - x) < Math.abs(points[index].x - x)) index = i
     })
-    setActive(nearest)
+    if (x < left - 9 || x > right + 9 || y < top - 9 || y > bottom + 5 || Math.abs(points[index].x - x) > layout.hoverDistance) {
+      if (active?.source === source) setSelection(undefined)
+      return
+    }
+    if (active?.index === index && active.source === source) {
+      if (source === 'touch') setSelection(undefined)
+    } else {
+      setSelection({ index, data, source })
+    }
   }
 
   function navigate(event: KeyboardEvent<HTMLDivElement>) {
-    const index = active ?? 0
-    const next = { ArrowLeft: index - 1, ArrowRight: index + 1, Home: 0, End: data.length - 1 }[event.key]
-    if (next === undefined) {
-      if (event.key === 'Escape') setActive(null)
-      return
+    if (event.key === 'Escape') {
+      if (active) event.stopPropagation()
+      setSelection(undefined)
     }
+    const current = active?.index ?? -1
+    const next = { ArrowLeft: current < 0 ? data.length - 1 : current - 1, ArrowRight: current + 1, Home: 0, End: data.length - 1 }[event.key]
+    if (next === undefined) return
     event.preventDefault()
-    setActive(Math.max(0, Math.min(data.length - 1, next)))
+    setSelection({ index: Math.max(0, Math.min(data.length - 1, next)), data, source: 'keyboard' })
   }
 
-  return <div className={`chart-frame${values.length ? '' : ' chart-empty'}`} ref={frame}
-    tabIndex={interactive && values.length ? 0 : undefined}
-    role={interactive ? 'group' : undefined}
-    aria-label={interactive ? `${title} chart. Use left and right arrow keys to inspect values.` : undefined}
-    onFocus={() => { if (values.length) setActive(0) }} onBlur={() => setActive(null)}
-    onKeyDown={navigate} onPointerMove={values.length ? move : undefined} onPointerDown={values.length ? move : undefined}
-    onPointerLeave={event => { if (event.currentTarget !== document.activeElement) setActive(null) }}>
-    {values.length ? <>
+  const caption = selected ? groupLabel(selected.key, period, true) : ''
+  const value = selected ? formatValue(selected.value, metric) : ''
+  const records = selected
+    ? `${integer.format(selected.records)} ${selected.records === 1 ? 'record' : 'records'}${selected.records !== selected.valid ? ` · ${integer.format(selected.valid)} with values` : ''}` : ''
+
+  return <div className={`chart-frame${hasValues ? '' : ' chart-empty'}`} ref={frame}
+    tabIndex={interactive && hasValues ? 0 : undefined} role={interactive ? 'group' : undefined}
+    aria-label={interactive ? `${title} chart` : undefined}
+    aria-describedby={interactive && hasValues ? hintId : undefined}
+    onFocus={event => {
+      if (hasValues && event.currentTarget.matches(':focus-visible')) setSelection({ data, index: 0, source: 'keyboard' })
+    }}
+    onBlur={() => setSelection(undefined)} onKeyDown={hasValues ? navigate : undefined}
+    onPointerMove={event => pick(event, 'pointer')}
+    onPointerUp={event => { if (event.pointerType === 'touch') pick(event, 'touch') }}
+    onPointerLeave={() => { if (active?.source === 'pointer') setSelection(undefined) }}>
+    {hasValues ? <>
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} aria-hidden="true">
-        <defs><linearGradient id={areaId} x2="0%" y2="100%"><stop stopColor="#78ba9e" stopOpacity=".27" /><stop offset="1" stopColor="#d7ede4" stopOpacity=".24" /></linearGradient></defs>
-        {ticks.map(tick => <g key={tick}>
-          <line x1={LEFT} x2={width - RIGHT} y1={y(tick)} y2={y(tick)} className={tick === 0 ? 'axis-zero' : 'axis-grid'} />
-          <text x={LEFT - 10} y={y(tick)} dy=".34em" textAnchor="end">{formatValue(tick, metric, true)}</text>
+        <defs><linearGradient id={areaId} x2="0%" y2="100%"><stop stopColor="#78ba9e" stopOpacity=".3" /><stop offset="1" stopColor="#d7ede4" stopOpacity=".17" /></linearGradient></defs>
+        {layout.ticks.map(tick => <g key={tick.value}>
+          <line x1={left} x2={right} y1={tick.y} y2={tick.y} className={tick.value === 0 ? 'axis-zero' : 'axis-grid'} />
+          <text x={left - 9} y={tick.y} dy=".34em" textAnchor="end">{tick.label}</text>
         </g>)}
-        {type === 'bar' ? points.map((point, index) => point.y !== null && <rect key={index} x={point.x - barWidth / 2}
-          y={Math.min(point.y, y(0))} width={barWidth} height={Math.max(1, Math.abs(y(0) - point.y))} rx="3" className="chart-bar" />)
-          : segments.map(segment => {
+        {selected && <line className="chart-cursor" x1={selected.x} x2={selected.x} y1={top} y2={bottom} />}
+        {type === 'bar' ? points.map((point, index) => point.y !== null && <rect key={index} x={point.x - layout.barWidth / 2}
+          y={Math.min(point.y, zero)} width={layout.barWidth} height={Math.max(0.8, Math.abs(zero - point.y))} rx="2"
+          className={`chart-bar${selected === point ? ' is-selected' : ''}`} />)
+          : layout.segments.map(segment => {
             const path = segment.map((point, i) => `${i === 0 ? 'M' : 'L'}${point.x},${point.y}`).join(' ')
             return <g key={segment[0].x}>
-              {segment.length > 1 && <path d={`${path} L${segment.at(-1)?.x},${y(0)} L${segment[0].x},${y(0)} Z`} fill={`url(#${areaId})`} />}
+              {segment.length > 1 && <path d={`${path} L${segment.at(-1)!.x},${zero} L${segment[0].x},${zero} Z`} fill={`url(#${areaId})`} />}
               <path d={path} className="chart-line" />
-              {(points.length <= 12 || segment.length === 1) && segment.map(point => <circle key={point.x} cx={point.x} cy={point.y} r="3.5" className="chart-dot" />)}
+              {(points.length <= 15 || segment.length === 1) && segment.map(point => <circle key={point.x} cx={point.x} cy={point.y} r="3.5" className="chart-dot" />)}
             </g>
           })}
-        {points.map((point, i) => i % labelEvery === 0 && <text key={i} x={point.x} y={height - 10} textAnchor="middle">
-          {period ? label(point.key, years.size > 1 && period === 'month') : label(point.key).length > 13 ? `${label(point.key).slice(0, 11)}…` : label(point.key)}
-        </text>)}
-        {selected && <g>
-          <line className="chart-cursor" x1={selected.x} x2={selected.x} y1={TOP} y2={height - BOTTOM} />
-          {selected.y !== null && <circle className="chart-dot active-dot" cx={selected.x} cy={selected.y} r="5" />}
-        </g>}
+        {layout.xLabels.map((label, i) => <text key={i} x={label.x} y={height - 11} textAnchor={label.align}>{label.text}</text>)}
+        {type === 'line' && selected && selected.y !== null && <circle className="chart-dot active-dot" cx={selected.x} cy={selected.y} r="5" />}
       </svg>
-      {interactive && <div className="chart-announcement" aria-live="polite">
-        {selected && <div className="chart-tooltip" style={{ left: Math.max(4, Math.min(width - 184, selected.x + 12)) }}>
-          <span>{label(selected.key, true)}</span><strong>{formatValue(selected.value, metric)}</strong>
-          <small>{integer.format(selected.records)} records{selected.records !== selected.valid ? ` · ${integer.format(selected.valid)} valid` : ''}</small>
+      {interactive && <>
+        <span className="sr-only" id={hintId}>Use arrow keys, Home, and End to inspect values. Escape closes the tooltip.</span>
+        <span aria-live="polite" className="sr-only">{active?.source === 'keyboard' && selected ? `${caption}. ${value}. ${records}.` : ''}</span>
+        {selected && <div className="chart-tooltip" aria-hidden="true" style={{
+          width: tooltipWidth,
+          left: Math.max(5, selected.x + 13 + tooltipWidth <= width ? selected.x + 13 : selected.x - tooltipWidth - 13),
+          top: Math.max(5, Math.min(height - 102, (selected.y ?? top) - 39)),
+        }}>
+          <span>{caption}</span><strong>{selected.value === null ? 'No valid values' : value}</strong><small>{records}</small>
         </div>}
-      </div>}
+      </>}
     </> : <><ChartNoAxesCombined size={25} aria-hidden="true" /><strong>No values to chart</strong><span>Adjust your filters, grouping, or metric.</span></>}
   </div>
 }

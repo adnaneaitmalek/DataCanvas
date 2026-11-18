@@ -1,14 +1,14 @@
-import { BarChart3, Boxes, ChevronDown, FileSpreadsheet, Globe2, MessageSquareText, ReceiptText, ShoppingBag } from 'lucide-react'
+import { Boxes, ChevronDown, FileSpreadsheet, Globe2, MessageSquareText, ReceiptText, ShoppingBag } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import type { ComponentProps, ReactNode } from 'react'
 import { samples } from '../data/samples'
 import type { SampleId } from '../data/samples'
 
-export const sampleIcons = { sales: ShoppingBag, expenses: ReceiptText, traffic: Globe2, inventory: Boxes, surveys: MessageSquareText }
+const sampleIcons = { sales: ShoppingBag, expenses: ReceiptText, traffic: Globe2, inventory: Boxes, surveys: MessageSquareText }
 
 export function Brand() {
   return <a className="brand" href="#/" aria-label="DataCanvas home">
-    <span className="brand-mark"><BarChart3 size={19} strokeWidth={2.5} /></span>
+    <img className="brand-mark" src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" width={34} height={34} />
     <span>DataCanvas</span>
   </a>
 }

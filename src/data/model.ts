@@ -18,6 +18,7 @@ export function validateFile(name: string, size: number) {
 }
 
 export type Cell = string | number | boolean | null
+export type SourceCell = Cell | { amount: number; unit: string; display: string }
 export type Kind = 'category' | 'text' | 'identifier' | 'date' | 'number' | 'currency' | 'percent'
 export type NumberStyle = 'auto' | 'dot' | 'comma'
 export type DateOrder = 'auto' | 'mdy' | 'dmy'
@@ -27,7 +28,7 @@ export const defaultSettings: Settings = { numberStyle: 'auto', dateOrder: 'auto
 export type Source = {
   filename: string
   headers: string[]
-  rows: Cell[][]
+  rows: SourceCell[][]
   notices: string[]
   sheet?: string
   sheets?: string[]
@@ -57,29 +58,36 @@ export const kinds: Record<Kind, string> = {
   percent: 'Percentage',
 }
 
-export const currencies = ['$', 'USD', 'EUR', 'GBP', 'JPY', 'CNY', 'CAD', 'AUD', 'NZD', 'CHF', 'INR', 'MAD', 'BRL', 'MXN', 'KRW', 'SEK', 'NOK', 'DKK', 'PLN', 'ZAR', 'AED', 'SAR']
+export const currencies = ['$', ...Intl.supportedValuesOf('currency')]
 export const isMeasure = (kind: Kind) => kind === 'number' || kind === 'currency' || kind === 'percent'
 export const integer = new Intl.NumberFormat('en', { maximumFractionDigits: 0 })
 const valueFormats = new Map<string, Intl.NumberFormat>()
+
+export function sourceValue(cell: SourceCell): Cell {
+  return cell !== null && typeof cell === 'object' ? cell.display : cell
+}
 
 export function formatValue(value: Cell, column?: Column, compact = false): string {
   if (value === null) return '—'
   if (typeof value === 'boolean') return value ? 'True' : 'False'
   if (typeof value !== 'number') return value
-  const notation = compact ? 'compact' : 'standard'
-  const number = column?.kind === 'percent' ? value / 100 : value
-  const digits = Math.abs(number) > 0 && Math.abs(number) < 0.01 && column?.kind !== 'percent' ? 6 : 2
   const currency = column?.kind === 'currency' ? column.unit : undefined
-  const style = column?.kind === 'percent' ? 'percent' : currency && currency !== '$' ? 'currency' : 'decimal'
+  const magnitude = Math.abs(value)
+  const notation = magnitude > 0 && (magnitude < 1e-5 || magnitude >= 1e15) ? 'scientific' : compact ? 'compact' : 'standard'
+  const scientificPercent = column?.kind === 'percent' && notation === 'scientific'
+  const style = column?.kind === 'percent' && !scientificPercent ? 'percent' : currency && currency !== '$' ? 'currency' : 'decimal'
+  const number = style === 'percent' ? value / 100 : value
+  const digits = compact ? (magnitude < 1 ? 5 : 2) : (magnitude < 1 ? 6 : 4)
   const key = `${style}-${currency}-${notation}-${digits}`
   let formatter = valueFormats.get(key)
   if (!formatter) {
     formatter = new Intl.NumberFormat('en', {
-      style, currency, notation, maximumFractionDigits: compact ? 1 : digits,
+      style, currency, notation, maximumFractionDigits: digits,
     })
     valueFormats.set(key, formatter)
   }
   const formatted = formatter.format(number)
+  if (scientificPercent) return formatted + '%'
   return column?.kind === 'currency' && column.unit === '$'
     ? (value < 0 ? `−$${formatted.slice(1)}` : `$${formatted}`)
     : formatted

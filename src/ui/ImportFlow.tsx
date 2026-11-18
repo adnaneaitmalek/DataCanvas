@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, Check, FileSpreadsheet, Info, LoaderCircle, LockKeyhole, UploadCloud } from 'lucide-react'
 import { useRef, useState } from 'react'
 import type { DragEvent } from 'react'
-import { currencies, defaultSettings, integer, kinds } from '../data/model'
+import { currencies, defaultSettings, integer, kinds, sourceValue } from '../data/model'
 import type { Dataset, Edits, Kind, Settings, Source } from '../data/model'
 import type { SampleId } from '../data/samples'
 import { Field, FileIdentity, SampleGrid, Select } from './shared'
@@ -19,7 +19,7 @@ function ImportMessage({ busy, error, onCancel }: { busy: string; error: string;
   return <>
     {error && <p className="notice error" role="alert"><Info size={17} />{error}</p>}
     {busy && <div className="notice busy" role="status">
-      <LoaderCircle size={17} className="spin" /><span>Reading {busy}…</span>
+      <LoaderCircle size={17} className="spin" /><span>{busy}…</span>
       <button className="quiet-link" type="button" onClick={onCancel}>Cancel</button>
     </div>}
   </>
@@ -107,14 +107,14 @@ export function ReviewPage({ source, dataset, edits, settings, onUpdate, onSheet
         {invalid > 0 && <p>{integer.format(invalid)} {invalid === 1 ? 'cell does' : 'cells do'} not match the selected types or formats. These values are treated as missing in charts. Check the examples below.</p>}
       </div>
     </div>}
-    <div className="panel review-schema">
+    <div className="panel review-schema" aria-busy={Boolean(busy)}>
       <div className="panel-heading review-controls">
         <div><h2>Column settings</h2><p>Previewing up to four source values per column.</p></div>
         <div className="settings-fields">
-          <Field label="Number format"><Select value={settings.numberStyle} onChange={event => onSettings({ ...settings, numberStyle: event.target.value as Settings['numberStyle'] })}>
+          <Field label="Number format"><Select disabled={Boolean(busy)} value={settings.numberStyle} onChange={event => onSettings({ ...settings, numberStyle: event.target.value as Settings['numberStyle'] })}>
             <option value="auto">Auto detect</option><option value="dot">1,234.56</option><option value="comma">1.234,56</option>
           </Select></Field>
-          <Field label="Date format"><Select value={settings.dateOrder} onChange={event => onSettings({ ...settings, dateOrder: event.target.value as Settings['dateOrder'] })}>
+          <Field label="Date format"><Select disabled={Boolean(busy)} value={settings.dateOrder} onChange={event => onSettings({ ...settings, dateOrder: event.target.value as Settings['dateOrder'] })}>
             <option value="auto">Auto detect</option><option value="mdy">MM/DD/YYYY</option><option value="dmy">DD/MM/YYYY</option>
           </Select></Field>
         </div>
@@ -123,17 +123,17 @@ export function ReviewPage({ source, dataset, edits, settings, onUpdate, onSheet
         <table className="data-table schema-table">
           <thead><tr><th scope="col">Column</th><th scope="col">Type</th><th scope="col">Source examples</th><th scope="col">Data quality</th></tr></thead>
           <tbody>{dataset.columns.map(column => {
-            const examples = Array.from(new Set(source.rows.slice(0, 60).map(row => row[column.index]).filter(value => value !== null && value !== ''))).slice(0, 4)
+            const examples = Array.from(new Set(source.rows.slice(0, 60).map(row => sourceValue(row[column.index])).filter(value => value !== null && value !== ''))).slice(0, 4)
             return <tr key={column.index}>
               <th scope="row">{column.name}</th>
               <td><div className="type-controls">
-                <Select aria-label={`Type for ${column.name}`} value={column.kind} onChange={event => onEdit({
+                <Select disabled={Boolean(busy)} aria-label={`Type for ${column.name}`} value={column.kind} onChange={event => onEdit({
                   ...edits, [column.index]: { kind: event.target.value as Kind, unit: column.unit },
                 })}>{Object.entries(kinds).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select>
-                {column.kind === 'currency' && <Select aria-label={`Currency for ${column.name}`} value={column.unit} onChange={event => onEdit({
+                {column.kind === 'currency' && <Select disabled={Boolean(busy)} aria-label={`Currency for ${column.name}`} value={column.unit} onChange={event => onEdit({
                   ...edits, [column.index]: { kind: 'currency', unit: event.target.value },
                 })}>{currencies.map(unit => <option key={unit} value={unit}>{unit === '$' ? '$ (unspecified)' : unit}</option>)}</Select>}
-                {column.kind === 'percent' && <Select aria-label={`Percentage scale for ${column.name}`} value={edits[column.index]?.percentScale ?? 'points'} onChange={event => onEdit({
+                {column.kind === 'percent' && <Select disabled={Boolean(busy)} aria-label={`Percentage scale for ${column.name}`} value={edits[column.index]?.percentScale ?? 'points'} onChange={event => onEdit({
                   ...edits, [column.index]: { kind: 'percent', percentScale: event.target.value as 'points' | 'fraction' },
                 })}><option value="points">Points</option><option value="fraction">Fraction</option></Select>}
               </div></td>
@@ -150,7 +150,7 @@ export function ReviewPage({ source, dataset, edits, settings, onUpdate, onSheet
     </div>
     <div className="review-footer">
       <a className="button secondary" href="#/import"><ArrowLeft size={16} /> Back</a>
-      <div>{changed && <button className="button text-button" type="button" onClick={() => onUpdate({}, defaultSettings)}>Reset types</button>}
+      <div>{changed && <button className="button text-button" type="button" disabled={Boolean(busy)} onClick={() => onUpdate({}, defaultSettings)}>Reset types</button>}
         <button className="button primary" type="button" disabled={Boolean(busy)} onClick={onContinue}>Build dashboard <ArrowRight size={16} /></button>
       </div>
     </div>

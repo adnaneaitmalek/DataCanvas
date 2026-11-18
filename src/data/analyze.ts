@@ -1,10 +1,9 @@
 import { isMeasure } from './model'
-import type { Cell, Column, Dataset } from './model'
+import type { Cell, Column } from './model'
 
 export type Aggregation = 'count' | 'sum' | 'average' | 'min' | 'max'
 export type Granularity = 'day' | 'week' | 'month' | 'quarter' | 'year'
 export type ChartType = 'line' | 'bar'
-export type Filter = { column: number; value: string; min: string; max: string; missing?: boolean }
 export type Metric = { column: number | null; aggregation: Aggregation }
 export type Datum = { key: string | null; value: number | null; records: number; valid: number }
 
@@ -18,8 +17,8 @@ export function recommendedAggregation(column: Column): Aggregation {
     ? 'sum' : 'average'
 }
 
-export function defaultMetric(columns: Column[]): Metric {
-  const measures = columns.filter(column => isMeasure(column.kind))
+export function defaultMetric(columns: Column[], rowCount = Infinity): Metric {
+  const measures = columns.filter(column => isMeasure(column.kind) && column.missing + column.invalid < rowCount)
   const preferred = measures.find(column => /\b(revenue|sales|amount|expenses?|sessions|stock|satisfaction)\b/i.test(column.name))
     ?? measures[0]
   return preferred ? { column: preferred.index, aggregation: recommendedAggregation(preferred) }
@@ -31,25 +30,6 @@ export function metricLabel(metric: Metric, column?: Column) {
   const labels: Record<Aggregation, string> = { count: 'Count of', sum: 'Total', average: 'Avg.', min: 'Min.', max: 'Max.' }
   const label = column.name.replace(/\s*\((?:[A-Z]{3}|[$€£%])\)\s*$/, '') || column.name
   return `${labels[metric.aggregation]} ${label.replace(/^[A-Z](?=[a-z])/, letter => letter.toLowerCase())}`
-}
-
-export function filterRows(dataset: Dataset, filters: Filter[]) {
-  if (!filters.length) return dataset.rows
-  const checks = filters.map(filter => {
-    const { kind } = dataset.columns[filter.column]
-    const needle = filter.value.toLowerCase()
-    return (row: Cell[]) => {
-      const cell = row[filter.column]
-      if (filter.missing) return cell === null
-      if (cell === null) return false
-      if (kind === 'date') return (!filter.min || String(cell) >= filter.min) && (!filter.max || String(cell) <= filter.max)
-      if (isMeasure(kind)) {
-        return typeof cell === 'number' && (!filter.min || cell >= Number(filter.min)) && (!filter.max || cell <= Number(filter.max))
-      }
-      return kind === 'category' ? cell === filter.value : String(cell).toLowerCase().includes(needle)
-    }
-  })
-  return dataset.rows.filter(row => checks.every(check => check(row)))
 }
 
 export function partitionDate(date: string, period: Granularity): string {
@@ -65,13 +45,18 @@ export function partitionDate(date: string, period: Granularity): string {
   return monday.toISOString().slice(0, 10)
 }
 
+const dateFormats = {
+  month: new Intl.DateTimeFormat('en', { month: 'short', timeZone: 'UTC' }),
+  monthYear: new Intl.DateTimeFormat('en', { month: 'short', year: 'numeric', timeZone: 'UTC' }),
+  day: new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
+  dayYear: new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }),
+}
+
 export function dateLabel(key: string, period: Granularity, full = false): string {
   if (period === 'year') return key.slice(0, 4)
   if (period === 'quarter') return `Q${Math.ceil(Number(key.slice(5, 7)) / 3)} ${key.slice(0, 4)}`
-  const options: Intl.DateTimeFormatOptions = {
-    month: 'short', day: period === 'month' ? undefined : 'numeric', year: full ? 'numeric' : undefined, timeZone: 'UTC',
-  }
-  return new Intl.DateTimeFormat('en', options).format(new Date(`${key}T00:00:00Z`))
+  const formatter = period === 'month' ? (full ? dateFormats.monthYear : dateFormats.month) : (full ? dateFormats.dayYear : dateFormats.day)
+  return formatter.format(new Date(`${key}T00:00:00Z`))
 }
 
 export function chooseGranularity(rows: Cell[][], column: number): Granularity {
@@ -91,15 +76,18 @@ export function chooseGranularity(rows: Cell[][], column: number): Granularity {
   return 'day'
 }
 
-type Stats = { records: number; valid: number; sum: number; min: number; max: number }
-const emptyStats = (): Stats => ({ records: 0, valid: 0, sum: 0, min: Infinity, max: -Infinity })
+type Stats = { records: number; valid: number; sum: number; correction: number; min: number; max: number }
+const emptyStats = (): Stats => ({ records: 0, valid: 0, sum: 0, correction: 0, min: Infinity, max: -Infinity })
 
 function add(stats: Stats, row: Cell[], metric: Metric) {
   stats.records++
   const value = metric.column === null ? 1 : row[metric.column]
-  if (typeof value !== 'number') return
+  if (typeof value !== 'number' || !Number.isFinite(value)) return
   stats.valid++
-  stats.sum += value
+  // Neumaier summation keeps small values when larger positive and negative values cancel.
+  const next = stats.sum + value
+  stats.correction += Math.abs(stats.sum) >= Math.abs(value) ? (stats.sum - next) + value : (value - next) + stats.sum
+  stats.sum = next
   stats.min = Math.min(stats.min, value)
   stats.max = Math.max(stats.max, value)
 }
@@ -107,8 +95,8 @@ function add(stats: Stats, row: Cell[], metric: Metric) {
 function summarize(stats: Stats, metric: Metric, key: Datum['key']): Datum {
   const values = {
     count: stats.valid,
-    sum: stats.sum,
-    average: stats.sum / stats.valid,
+    sum: stats.sum + stats.correction,
+    average: (stats.sum + stats.correction) / stats.valid,
     min: stats.min,
     max: stats.max,
   }
@@ -129,6 +117,7 @@ export function total(rows: Cell[][], metric: Metric): Datum {
 
 export function groupRows(rows: Cell[][], metric: Metric, group: Column | undefined, period: Granularity) {
   const buckets = new Map<string | null, Stats>()
+  const partitions = new Map<string, string>()
   let excluded = 0
   for (const row of rows) {
     const cell = group ? row[group.index] : 'All records'
@@ -136,7 +125,12 @@ export function groupRows(rows: Cell[][], metric: Metric, group: Column | undefi
       excluded++
       continue
     }
-    const key = cell === null ? null : group?.kind === 'date' ? partitionDate(String(cell), period) : String(cell)
+    let key = cell === null ? null : String(cell)
+    if (group?.kind === 'date' && key !== null) {
+      const date = key
+      key = partitions.get(date) ?? partitionDate(date, period)
+      partitions.set(date, key)
+    }
     let stats = buckets.get(key)
     if (!stats) {
       stats = emptyStats()
@@ -146,7 +140,7 @@ export function groupRows(rows: Cell[][], metric: Metric, group: Column | undefi
   }
   const groups = [...buckets].map(([key, stats]) => summarize(stats, metric, key))
   groups.sort(group?.kind === 'date'
-    ? (a, b) => String(a.key).localeCompare(String(b.key))
+    ? (a, b) => a.key! < b.key! ? -1 : a.key! > b.key! ? 1 : 0
     : (a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity) || String(a.key).localeCompare(String(b.key)))
   return { groups, excluded }
 }
