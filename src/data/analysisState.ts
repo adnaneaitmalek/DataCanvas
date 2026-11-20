@@ -7,6 +7,7 @@ import { isMeasure } from './model'
 import type { Column, Dataset } from './model'
 
 export type TableState = { query: string; page: number; raw: boolean; sort?: { column: number; ascending: boolean } }
+export type TablePosition = { jump?: string; anchor?: string; offset?: number }
 export type AnalysisState = {
   metric: Metric
   groupIndex: number | null

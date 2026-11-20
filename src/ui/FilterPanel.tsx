@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { ListFilter, Plus, X } from 'lucide-react'
 import { columnLabel } from '../data/currency'
 import { FilterInputError, filterDescription, filterInput, initialDraft, numberExample, operatorsFor, parseFilter } from '../data/filters'
@@ -11,14 +12,16 @@ import { Field, Select } from './shared'
 export function FilterButton({ open, count, controls, onClick }: {
   open: boolean; count: number; controls: string; onClick: () => void
 }) {
-  return <button type="button" className="button secondary filters-toggle" aria-expanded={open} aria-controls={controls} onClick={onClick}>
+  return <button type="button" className="button secondary filters-toggle" aria-expanded={open} aria-haspopup="dialog"
+    aria-controls={open ? controls : undefined} onClick={onClick}>
     <ListFilter size={16} /> Filters {count > 0 && <span className="filter-count">{count}</span>}
   </button>
 }
 
-export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, onOpen, onViewResults, id }: {
+export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, onOpen, onViewResults, id, anchor, hasMatches }: {
   dataset: Dataset; filters: Filter[]; mode: MatchMode; onChange: (filters: Filter[]) => void; onMode: (mode: MatchMode) => void;
   open: boolean; onOpen: (open: boolean) => void; onViewResults: () => void; id: string
+  anchor: HTMLDivElement | null; hasMatches: boolean
 }) {
   const first = dataset.columns.find(column => column.kind === 'category') ?? dataset.columns[0]
   const [draft, setDraft] = useState<FilterDraft>(() => initialDraft(first))
@@ -26,6 +29,9 @@ export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, on
   const [error, setError] = useState<{ message: string; field: 'value' | 'end' | 'column' }>()
   const columnInput = useRef<HTMLSelectElement>(null)
   const resultsButton = useRef<HTMLButtonElement>(null)
+  const editor = useRef<HTMLDialogElement>(null)
+  const applied = useRef<HTMLDivElement>(null)
+  const titleId = useId()
   const hint = useId()
   const errorId = useId()
   const column = dataset.columns[draft.column]
@@ -44,8 +50,38 @@ export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, on
   }, [dataset.rows, column])
 
   useEffect(() => {
-    if (open && editing !== undefined) columnInput.current?.focus()
-  }, [open, editing])
+    const dialog = editor.current
+    if (!open || !anchor || !dialog) return
+    const narrow = window.matchMedia('(max-width: 700px)')
+    function show() {
+      if (!dialog) return
+      if (dialog.open) dialog.close()
+      if (narrow.matches) dialog.showModal()
+      else dialog.show()
+      columnInput.current?.focus({ preventScroll: true })
+    }
+    function dismissOutside(event: PointerEvent) {
+      if (!narrow.matches && event.target instanceof Node && !anchor?.contains(event.target) && !applied.current?.contains(event.target)) onOpen(false)
+    }
+    show()
+    narrow.addEventListener('change', show)
+    document.addEventListener('pointerdown', dismissOutside)
+    return () => {
+      narrow.removeEventListener('change', show)
+      document.removeEventListener('pointerdown', dismissOutside)
+      if (dialog.open) dialog.close()
+    }
+  }, [anchor, onOpen, open])
+
+  function focusTrigger() {
+    anchor?.querySelector<HTMLButtonElement>('.filters-toggle')?.focus({ preventScroll: true })
+  }
+
+  function dismiss() {
+    reset(initialDraft(first))
+    onOpen(false)
+    requestAnimationFrame(focusTrigger)
+  }
 
   function update(next: FilterDraft) {
     setError(undefined)
@@ -70,7 +106,7 @@ export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, on
     if (editing === index) reset()
     else if (editing !== undefined && index < editing) setEditing(editing - 1)
     if (open) columnInput.current?.focus()
-    else document.querySelector<HTMLButtonElement>(`[aria-controls="${id}"]`)?.focus()
+    else focusTrigger()
   }
 
   function apply(event: FormEvent<HTMLFormElement>) {
@@ -96,13 +132,15 @@ export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, on
     ? <p className="field-error" id={errorId} role="alert">{error.message}</p>
     : null
 
-  return <div id={id} className={`filters-area${open || filters.length ? ' has-content' : ''}`}>
+  const combine = filters.length > 1 && <Field label="Combine conditions">
+    <Select value={mode} onChange={event => onMode(event.target.value as MatchMode)}>
+      <option value="all">Match all (AND)</option><option value="any">Match any (OR)</option>
+    </Select>
+  </Field>
+
+  return <div ref={applied} className={`filters-area${filters.length ? ' has-content' : ''}`}>
     {filters.length > 0 && <div className="filter-chips" aria-label="Applied filters">
-      {filters.length > 1 && <Field label="Combine conditions">
-        <Select value={mode} onChange={event => onMode(event.target.value as MatchMode)}>
-          <option value="all">Match all (AND)</option><option value="any">Match any (OR)</option>
-        </Select>
-      </Field>}
+      {!open && combine}
       {filters.map((filter, i) => {
         const field = dataset.columns[filter.column]
         const description = filterDescription(filter, field)
@@ -114,16 +152,26 @@ export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, on
           <button type="button" className="filter-remove" onClick={() => remove(i)} aria-label={`Remove filter ${label} ${description}`}><X size={14} /></button>
         </span>
       })}
-      <button className="quiet-link" type="button" onClick={() => {
+      {hasMatches && <button className="quiet-link" type="button" onClick={() => {
         onChange([]); reset(initialDraft(first)); onMode('all')
         if (open) columnInput.current?.focus()
-        else document.querySelector<HTMLButtonElement>(`[aria-controls="${id}"]`)?.focus()
-      }}>Clear filters</button>
+        else focusTrigger()
+      }}>Clear filters</button>}
     </div>}
-    {open && <form className="panel filter-editor" onSubmit={apply} noValidate>
+    {open && anchor && createPortal(<dialog ref={editor} id={id} className="filter-surface" aria-labelledby={titleId}
+      onCancel={event => { event.preventDefault(); dismiss() }}
+      onClick={event => { if (event.target === event.currentTarget) dismiss() }}
+      onKeyDown={event => {
+        if (event.key !== 'Escape' || event.defaultPrevented || event.currentTarget.matches(':modal')) return
+        if (CSS.supports('selector(:open)') && event.currentTarget.querySelector('select:open')) return
+        event.preventDefault()
+        dismiss()
+      }}>
+    <form className="filter-editor" onSubmit={apply} noValidate>
       <div className="filter-editor-heading">
-        <div><h2>{editing === undefined ? 'Add a condition' : 'Edit condition'}</h2>
+        <div><h2 id={titleId}>{editing === undefined ? 'Add a condition' : 'Edit condition'}</h2>
           <p id={hint}>Conditions apply to the entire dashboard.</p></div>
+        <button type="button" className="button text-button icon-button" aria-label="Close filters" onClick={dismiss}><X size={17} /></button>
       </div>
       <div className="filter-fields" aria-describedby={hint}>
         <div><Field label="Filter column"><Select {...invalid('column')} ref={columnInput} value={draft.column} onChange={event => update(initialDraft(dataset.columns[Number(event.target.value)]))}>
@@ -145,6 +193,7 @@ export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, on
             {...invalid('end')} onChange={event => update({ ...draft, end: event.target.value })} />
         </Field>{reportError('end')}</div>}
       </div>
+      {combine && <div className="filter-combine">{combine}</div>}
       <div className="filter-editor-footer">
         {!error && numeric && hasInput && <p className="filter-format-hint">{numberExample(column)}</p>}
         <div>
@@ -154,6 +203,6 @@ export function FilterPanel({ dataset, filters, mode, onChange, onMode, open, on
           {!!filters.length && <button ref={resultsButton} className="button secondary" type="button" onClick={onViewResults}>View results</button>}
         </div>
       </div>
-    </form>}
+    </form></dialog>, anchor)}
   </div>
 }

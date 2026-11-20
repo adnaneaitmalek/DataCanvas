@@ -1,8 +1,8 @@
-import { useDeferredValue, useId, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { ArrowDown, ArrowDownUp, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, Search } from 'lucide-react'
 import { csv, downloadCsv, typedCsv } from '../data/export'
-import type { TableState } from '../data/analysisState'
+import type { TablePosition, TableState } from '../data/analysisState'
 import { columnLabel } from '../data/currency'
 import { formatValue, integer, isMeasure, sourceValue } from '../data/model'
 import type { Cell, Dataset, Source } from '../data/model'
@@ -16,14 +16,25 @@ export interface TableExport {
   download: () => void
 }
 
-export function DataTable({ source, dataset, rows, state, onChange, renderExport }: {
+function columnLeft(scroll: HTMLDivElement, name: string) {
+  const row = scroll.querySelector<HTMLTableRowElement>('thead tr')
+  const header = Array.from(row?.cells ?? []).find(cell => cell.dataset.column === name)
+  if (!row || !header) return undefined
+  return scroll.scrollLeft + header.getBoundingClientRect().left - scroll.getBoundingClientRect().left - row.cells[0].offsetWidth
+}
+
+export function DataTable({ source, dataset, rows, state, position, onChange, renderExport, onPositionChange }: {
   source: Source; dataset: Dataset; rows: Cell[][]; state: TableState; onChange: (patch: Partial<TableState>) => void
+  position: TablePosition
+  onPositionChange: () => void
   renderExport: (selection: TableExport) => ReactNode
 }) {
   const { query, page, sort, raw } = state
   const scrollHint = useId()
   const scroller = useRef<HTMLDivElement>(null)
-  const [jumpColumn, setJumpColumn] = useState('')
+  const savePosition = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const [jumpColumn, setJumpColumn] = useState(position.jump ?? '')
+  const [overflows, setOverflows] = useState(false)
   const deferredQuery = useDeferredValue(query)
   const collator = useMemo(() => new Intl.Collator('en', { numeric: true, sensitivity: 'base' }), [])
   const sourceIndex = useMemo(() => new Map(dataset.rows.map((row, index) => [row, index])), [dataset.rows])
@@ -53,12 +64,33 @@ export function DataTable({ source, dataset, rows, state, onChange, renderExport
   const base = source.filename.replace(/\.[^.]+$/, '')
   const label = (index: number) => raw ? dataset.columns[index].name : columnLabel(dataset.columns[index])
 
-  function jumpToColumn(index: number) {
+  useLayoutEffect(() => {
     const scroll = scroller.current
-    const headers = scroll?.querySelectorAll<HTMLTableCellElement>('thead th')
-    if (!scroll || !headers?.[index + 1]) return
-    scroll.scrollLeft += headers[index + 1].getBoundingClientRect().left - scroll.getBoundingClientRect().left - headers[0].offsetWidth
+    const table = scroll?.querySelector('table')
+    if (!scroll || !table) return
+    const left = position.anchor === undefined ? undefined : columnLeft(scroll, position.anchor)
+    const jump = position.jump === undefined ? undefined : columnLeft(scroll, position.jump)
+    scroll.scrollLeft = left === undefined ? (jump ?? 0) : left + (position.offset ?? 0)
+    const measure = () => setOverflows(scroll.scrollWidth > scroll.clientWidth + 1)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(scroll)
+    observer.observe(table)
+    return () => observer.disconnect()
+  }, [dataset.columns, position])
+
+  function rememberPosition(scroll: HTMLDivElement) {
+    const row = scroll.querySelector<HTMLTableRowElement>('thead tr')
+    if (!row) return
+    const firstVisible = scroll.getBoundingClientRect().left + row.cells[0].offsetWidth
+    const cell = Array.from(row.cells).slice(1).find(header => header.getBoundingClientRect().right > firstVisible + 1)
+    position.anchor = cell?.dataset.column
+    position.offset = cell ? firstVisible - cell.getBoundingClientRect().left : 0
+    clearTimeout(savePosition.current)
+    savePosition.current = setTimeout(onPositionChange, 150)
   }
+
+  useLayoutEffect(() => () => clearTimeout(savePosition.current), [])
 
   return <section className="panel table-panel" aria-label="Data table">
     <div className="panel-heading table-heading">
@@ -73,22 +105,30 @@ export function DataTable({ source, dataset, rows, state, onChange, renderExport
         } })}
       </div>
     </div>
-    <div className="table-navigation">
+    {overflows && <div className="table-navigation">
       <p className="table-scroll-hint" id={scrollHint}>Scroll sideways to see more columns. Use the arrow keys when the table is focused.</p>
-      {dataset.columns.length > 7 && <Field label="Jump to column"><Select value={jumpColumn} onChange={event => {
-        setJumpColumn(event.target.value)
-        jumpToColumn(Number(event.target.value))
+      {dataset.columns.length > 7 && <Field label="Jump to column"><Select value={dataset.columns.some(column => column.name === jumpColumn) ? jumpColumn : ''} onChange={event => {
+        const name = event.target.value
+        setJumpColumn(name)
+        position.jump = name
+        const scroll = scroller.current
+        const left = scroll ? columnLeft(scroll, name) : undefined
+        if (scroll && left !== undefined) {
+          scroll.scrollLeft = left
+          rememberPosition(scroll)
+        }
       }}>
         <option value="" disabled>Choose a column</option>
-        {dataset.columns.map(column => <option key={column.index} value={column.index}>{label(column.index)}</option>)}
+        {dataset.columns.map(column => <option key={column.index} value={column.name}>{label(column.index)}</option>)}
       </Select></Field>}
-    </div>
-    <div className="table-scroll" ref={scroller} tabIndex={0} role="region" aria-label="Spreadsheet rows" aria-describedby={scrollHint}>
+    </div>}
+    <div className="table-scroll" ref={scroller} tabIndex={0} role="region" aria-label="Spreadsheet rows"
+      aria-describedby={overflows ? scrollHint : undefined} onScroll={event => rememberPosition(event.currentTarget)}>
       <table className="data-table">
         <thead><tr><th scope="col" aria-label="Row number">#</th>{dataset.columns.map(column => {
           const active = sort?.column === column.index
           const SortIcon = active ? sort.ascending ? ArrowUp : ArrowDown : ArrowDownUp
-          return <th key={column.index} scope="col" className={isMeasure(column.kind) ? 'numeric-cell' : undefined}
+          return <th key={column.index} scope="col" data-column={column.name} className={isMeasure(column.kind) ? 'numeric-cell' : undefined}
             aria-sort={active ? sort.ascending ? 'ascending' : 'descending' : undefined}>
             <button type="button" onClick={() => onChange({ sort: { column: column.index, ascending: !active || !sort.ascending }, page: 0 })}>
               <span title={label(column.index)}>{label(column.index)}</span><SortIcon size={13} />

@@ -1,13 +1,13 @@
 import { useId, useMemo, useState } from 'react'
 import {
-  ChartColumn, ChartNoAxesCombined, ChevronRight, Download, FileSpreadsheet, FileText, Grid2X2, Image,
-  Info, Settings2, Table2, Upload,
+  ChartColumn, ChartNoAxesCombined, Check, ChevronRight, Download, FileSpreadsheet, FileText, Grid2X2, Image,
+  Info, Settings2, Table2,
 } from 'lucide-react'
 import {
   aggregations, chooseGranularity, coverageLabel, dateLabel, defaultMetric, groupRows, metricLabel, periods, recommendedAggregation, total,
 } from '../data/analyze'
 import type { Aggregation, Datum, Granularity, Metric } from '../data/analyze'
-import type { AnalysisState } from '../data/analysisState'
+import type { AnalysisState, TablePosition } from '../data/analysisState'
 import { columnLabel } from '../data/currency'
 import { chartCsv, csv, downloadCsv } from '../data/export'
 import { filterDescription, filterRows } from '../data/filters'
@@ -106,15 +106,17 @@ export function DashboardPreview() {
   </div>
 }
 
-export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis, onReview }: {
+export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis, onReview, tablePosition, onPositionChange, importStatus, hasDraft }: {
   source: Source; dataset: Dataset; title: string; sample: boolean; analysis: AnalysisState; onAnalysis: (patch: Partial<AnalysisState>) => void
-  onReview: () => void
+  onReview: () => void; tablePosition: TablePosition; onPositionChange: () => void
+  importStatus?: 'automatic' | 'reviewed' | 'reopened'; hasDraft: boolean
 }) {
   const dates = dataset.columns.filter(column => column.kind === 'date' && column.invalid + column.missing < dataset.rows.length)
   const dimensions = dataset.columns.filter(column => column.kind === 'category')
   const measures = dataset.columns.filter(column => isMeasure(column.kind))
   const { metric, groupIndex, period, chart, filters, mode, tab, table, removedFilters } = analysis
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [filterAnchor, setFilterAnchor] = useState<HTMLDivElement | null>(null)
   const filterId = useId()
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState('')
@@ -146,6 +148,8 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
     dateGroup ? `${group.name} by ${period}` : undefined,
   ].filter(Boolean).join(' · ')
   const canGroup = dates.length > 0 || dimensions.length > 0
+  const quality = dataset.columns.filter(column => column.invalid || column.missing || column.note)
+  const invalidCount = quality.reduce((count, column) => count + column.invalid, 0)
 
   function showResults() {
     setFiltersOpen(false)
@@ -154,7 +158,6 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
 
   function editFilters() {
     setFiltersOpen(true)
-    requestAnimationFrame(() => document.getElementById(filterId)?.querySelector<HTMLSelectElement>('[data-filter-field="column"]')?.focus())
   }
 
   function changeGroup(value: string) {
@@ -208,7 +211,7 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
     const unavailable = scopePending ? 'Confirm the export scope to download files.'
       : selection?.pending ? 'Updating the table results…'
       : !(selection?.count ?? rows.length) ? 'There are no matching rows to export.' : undefined
-    return <Popover className="export-menu" buttonClass="button primary" label={<><Download size={16} /> {selection ? 'Export table' : exporting ? 'Exporting…' : 'Export'}</>}>
+    return <Popover className="export-menu" buttonClass="button secondary" label={<><Download size={16} /> {selection ? 'Export table' : exporting ? 'Exporting…' : 'Export'}</>}>
       <div className="panel export-choices">
         {unavailable && <p className="export-note">{unavailable}</p>}
         {selection ? <>
@@ -251,10 +254,25 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
             <div className="panel dataset-source-details"><strong>{source.filename}</strong>{source.sheet && <span>Worksheet {source.sheet}</span>}</div>
           </details>
           <span aria-hidden="true">·</span><span>{integer.format(source.rows.length)} rows · {source.headers.length} columns</span>
-        </div></div>
+          {(quality.length > 0 || source.notices.length > 0) && <details className="dataset-source dataset-quality">
+            <summary><Info size={14} aria-hidden="true" /> Data quality{invalidCount > 0 ? ` · ${integer.format(invalidCount)} invalid` : ''}</summary>
+            <div className="panel dataset-source-details">
+              {source.notices.map(notice => <p key={notice}>{notice}</p>)}
+              {quality.map(column => <p key={column.index}><strong>{column.name}</strong> {[
+                column.missing ? `${integer.format(column.missing)} missing` : '',
+                column.invalid ? `${integer.format(column.invalid)} invalid and excluded from calculations` : '',
+                column.note ?? '',
+              ].filter(Boolean).join(' · ')}</p>)}
+            </div>
+          </details>}
+        </div>
+        {importStatus && <p className="import-ready" role="status"><Check size={14} aria-hidden="true" />
+          {importStatus === 'reopened' ? 'Reopened saved analysis. Your filters and column settings are preserved.'
+            : importStatus === 'automatic' ? 'Import ready. Column types were detected automatically.' : 'Import ready with your reviewed settings.'}
+        </p>}
+      </div>
       <div className="workspace-actions">
-        <a className="button secondary new-import" href="#/import"><Upload size={16} /> New import</a>
-        <WorkspaceLink route="review" onFollow={onReview}><Settings2 size={16} /> Edit columns</WorkspaceLink>
+        <WorkspaceLink route="review" onFollow={onReview}><Settings2 size={16} /> {hasDraft ? 'Resume column edits' : 'Edit columns'}</WorkspaceLink>
         {tab === 'overview' && exportMenu()}
       </div>
     </div>
@@ -273,12 +291,14 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
         <button type="button" aria-pressed={tab === 'table'} onClick={() => onAnalysis({ tab: 'table' })}><Table2 size={16} /> Data table</button>
       </div>
       <div className="view-tools"><span className={`matches${filters.length ? '' : ' unfiltered'}`} aria-live="polite">{matchedLabel}</span>
-        <FilterButton open={filtersOpen} count={filters.length} controls={filterId} onClick={() => setFiltersOpen(!filtersOpen)} />
+        <div className="filter-anchor" ref={setFilterAnchor}>
+          <FilterButton open={filtersOpen} count={filters.length} controls={filterId} onClick={() => setFiltersOpen(!filtersOpen)} />
+        </div>
       </div>
     </div>
     <FilterPanel dataset={dataset} filters={filters} mode={mode} onChange={filters => onAnalysis({ filters, table: { ...table, page: 0 } })}
       onMode={mode => onAnalysis({ mode, table: { ...table, page: 0 } })}
-      open={filtersOpen} onOpen={setFiltersOpen} onViewResults={showResults} id={filterId} />
+      open={filtersOpen} onOpen={setFiltersOpen} onViewResults={showResults} id={filterId} anchor={filterAnchor} hasMatches={rows.length > 0} />
     <div id="analysis-results" tabIndex={-1} className="analysis-results" aria-label="Analysis results">
     {rows.length === 0 && filters.length > 0 && <section className="panel no-matches">
       <h2>No rows match these filters</h2>
@@ -324,7 +344,7 @@ export function Dashboard({ source, dataset, title, sample, analysis, onAnalysis
         </section>
         {category && <Breakdown data={breakdown} column={displayColumn} title={breakdownTitle} />}
       </div> : <button type="button" className="button secondary view-rows" onClick={() => { onAnalysis({ tab: 'table' }); showResults() }}><Table2 size={16} /> View rows</button>}
-    </> : <DataTable source={source} dataset={dataset} rows={rows} state={table} renderExport={exportMenu}
+    </> : <DataTable source={source} dataset={dataset} rows={rows} state={table} position={tablePosition} renderExport={exportMenu} onPositionChange={onPositionChange}
       onChange={patch => onAnalysis({ table: { ...table, ...patch } })} />}
     </div>
   </main>

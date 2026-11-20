@@ -174,9 +174,17 @@ function infer(values: SourceCell[], name: string, style: NumberStyle, order: Da
   }
   if (known || fits(currencyCells)) return {
     kind: 'currency', unit: known ?? units.values().next().value,
-    note: !known && currencyCells < values.length ? 'Amounts without a currency marker use the inferred unit.' : undefined,
+    note: (known ?? units.values().next().value) === '$' ? 'The dollar symbol has no currency code. Choose a code if you know which dollar currency this is.'
+      : !known && currencyCells < values.length ? 'Amounts without a currency marker use the inferred unit.' : undefined,
   }
   if (fits(numbers) && !percentCells && !currencyCells) return { kind: 'number' }
+  if (/\bdate\b/i.test(name) && (dates > 0 || values.some(value => typeof value === 'string' && (isoDate.test(value) || localDate.test(value))))) {
+    return { kind: 'date' }
+  }
+  if (/\bdate$/i.test(name)) return { kind: 'text', note: 'These dates could not be recognized. Check the source values before grouping by date.' }
+  if (/\b(revenue|sales|amount|cost|price|balance|expense|spend|quantity|total)\b/i.test(name) && (numbers || currencyCells)) {
+    return { kind: 'text', note: 'Some amounts could not be recognized. Check the examples and choose a number or currency type if this column should be included in calculations.' }
+  }
   if (/\b(feedback|comments?|notes?|description|remarks?)\b/i.test(name)) return { kind: 'text' }
   const distinct = new Set(values.map(sourceValue)).size
   const short = values.every(value => String(sourceValue(value)).length <= 72)
@@ -201,9 +209,20 @@ export function profile(source: Source, edits: Edits = {}, settings = defaultSet
           return evidence !== undefined && resolveMarker(evidence, unit) !== unit
         }))
     const column: Column = {
-      index, name, kind, unit, missing: raw.length - nonempty.length, invalid: 0, note: edits[index] ? undefined : guess.note,
+      index, name, kind, unit, missing: raw.length - nonempty.length, invalid: 0, note: kind === guess.kind ? guess.note : undefined,
       numberStyle: style, dateOrder: order, percentScale: kind === 'percent' ? edits[index]?.percentScale ?? 'points' : undefined,
       allowUnmarked,
+      acceptedInterpretation: edits[index]?.acceptedInterpretation,
+    }
+    if (kind === 'currency' && guess.unit === '$' && unit !== '$') column.note = undefined
+    if (kind === 'currency' && unit === '$') column.note = 'Choose a currency code or keep this column as text before using its amounts.'
+    if (kind === 'percent' && !edits[index]?.percentScale && nonempty.some(value => {
+      if (typeof value === 'object' || typeof value === 'string' && percentMarker.test(value)) return false
+      const number = parseNumber(value, style)
+      return number !== null && Math.abs(number) > 0 && Math.abs(number) < 1
+    })) {
+      column.confirmPercentScale = true
+      column.note = 'Choose Points if 0.25 means 0.25%, or Fraction if it means 25%.'
     }
     raw.forEach((value, rowIndex) => {
       const typed = mapValue(value, column, declared && declared !== '$' && declared !== '¥' ? declared : undefined)

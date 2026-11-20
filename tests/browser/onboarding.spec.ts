@@ -1,0 +1,246 @@
+import { Buffer } from 'node:buffer'
+import { readFile } from 'node:fs/promises'
+import { expect, test } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { utils, write } from '@e965/xlsx'
+import { showAllColumns, editColumns, reviewAction, reviewHeading } from './import-flow'
+
+const sales = 'Date,Region,Revenue (USD)\n2025-01-04,West,1200.50\n2025-01-05,East,420.25\n2025-01-06,West,300.00'
+const heading = (page: Page, name: string) => page.getByRole('heading', { name, exact: true })
+const importLink = (page: Page) => page.getByRole('link', { name: 'Import', exact: true })
+
+async function upload(page: Page, name: string, data: string | Buffer) {
+  await page.locator('input[type=file]').setInputFiles({
+    name, mimeType: 'application/octet-stream', buffer: typeof data === 'string' ? Buffer.from(data) : data,
+  })
+}
+
+test('opens clean CSV, TSV and single-sheet Excel directly', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/')
+  await page.getByRole('link', { name: 'Start analyzing' }).press('Enter')
+  await expect(heading(page, 'Import a spreadsheet')).toBeFocused()
+  await page.screenshot({ path: info.outputPath('after-import-1440.png'), animations: 'disabled' })
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Choose file' }).press('Enter'),
+  ])
+  await chooser.setFiles({ name: 'monthly-sales.csv', mimeType: 'text/csv', buffer: Buffer.from(sales) })
+  await expect(heading(page, 'monthly-sales')).toBeFocused()
+  await expect(reviewHeading(page)).toHaveCount(0)
+  await expect(page.getByText('Import ready. Column types were detected automatically.')).toBeVisible()
+  await expect(page.locator('.featured-stat')).toContainText('$1,920.75')
+  await page.screenshot({ path: info.outputPath('after-dashboard-1440.png') })
+  await page.goBack()
+  await expect(heading(page, 'Import a spreadsheet')).toBeVisible()
+  await page.goForward()
+  await expect(heading(page, 'monthly-sales')).toBeVisible()
+
+  const book = utils.book_new(utils.aoa_to_sheet([['Region', 'Revenue'], ['West', 15], ['East', 25]]), 'April')
+  for (const [file, data, title] of [
+    ['signups.tsv', 'Team\tQuantity\nWest\t10\nEast\t20', 'signups'],
+    ['revenue.xlsx', write(book, { type: 'buffer', bookType: 'xlsx' }), 'April'],
+  ] as const) {
+    await importLink(page).click()
+    await upload(page, file, data)
+    await expect(heading(page, title)).toBeFocused()
+    await expect(reviewHeading(page)).toHaveCount(0)
+  }
+
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    const header = await page.locator('.site-shell-inner').boundingBox()
+    const workspace = await page.locator('.workspace').boundingBox()
+    expect(header?.x).toBe(workspace?.x)
+  }
+})
+
+test('shows only flagged columns and requires a choice for ambiguous percentages', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/#/import')
+  await upload(page, 'regional-report.csv', 'Order date;Revenue (EUR);Completion %;Region;Owner;Quantity\n02/03/2025;1,234;0.25;West;Lee;2\n04/05/2025;2,345;0.5;East;Sam;1')
+  await expect(reviewHeading(page)).toBeFocused()
+  await expect(page.locator('.schema-row h3')).toHaveText(['Order date', 'Revenue (EUR)', 'Completion %'])
+  await expect(reviewAction(page)).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Percentage scale for Completion %' })).toHaveValue('')
+  await page.screenshot({ path: info.outputPath('after-review-390.png') })
+  await page.getByRole('combobox', { name: 'Date format', exact: true }).selectOption('dmy')
+  await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('dot')
+  await page.getByRole('combobox', { name: 'Percentage scale for Completion %' }).selectOption('fraction')
+  await expect(page.getByText('25%', { exact: true })).toBeVisible()
+  const advanced = page.getByRole('button', { name: 'Show all 6 columns' })
+  await advanced.click()
+  await expect(heading(page, 'Region')).toBeVisible()
+  await page.getByRole('button', { name: 'Show only flagged columns' }).click()
+  await expect(heading(page, 'Region')).toHaveCount(0)
+  await reviewAction(page).click()
+  await expect(page.locator('.featured-stat')).toContainText('€3,579.00')
+  await expect(page.getByText('Import ready with your reviewed settings.')).toBeVisible()
+})
+
+test('keeps clean column settings optional and lets users undo a change by keyboard', async ({ page }, info) => {
+  await page.goto('/#/import')
+  await upload(page, 'monthly-sales.csv', sales)
+  await expect(heading(page, 'monthly-sales')).toBeVisible()
+  await editColumns(page).press('Enter')
+  await expect(heading(page, 'Ready for your dashboard')).toBeVisible()
+  await expect(page.locator('.schema-row')).toHaveCount(0)
+  await expect(reviewAction(page)).toBeEnabled()
+  await page.getByRole('button', { name: 'Show all 3 columns' }).press('Enter')
+  await expect(page.locator('.schema-compact')).toHaveCount(3)
+  const toggle = page.getByRole('button', { name: 'Expand column Revenue (USD)' })
+  await toggle.press('Enter')
+  await expect(page.getByRole('combobox', { name: 'Currency for Revenue (USD)' })).toHaveValue('USD')
+  await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('comma')
+  await expect(reviewAction(page)).toBeDisabled()
+  await page.getByRole('button', { name: 'Undo change' }).press('Enter')
+  await expect(page.getByRole('combobox', { name: 'Number format', exact: true })).toHaveValue('auto')
+  await expect(reviewAction(page)).toBeEnabled()
+  await page.getByRole('button', { name: 'Collapse column Revenue (USD)' }).press('Enter')
+  await expect(toggle).toBeFocused()
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    await page.screenshot({ path: info.outputPath(`optional-settings-${width}.png`), fullPage: true })
+  }
+  await reviewAction(page).press('Enter')
+  await expect(page.locator('.featured-stat')).toContainText('$1,920.75')
+})
+
+test('requires decisions for ambiguous dates and amounts and makes exclusions explicit and reversible', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/#/import')
+  await upload(page, 'uncertain.csv', 'Order date;Revenue (EUR);Region;Owner\n02/03/2025;1,234;West;Lee\n04/05/2025;2,345;East;Sam')
+  await expect(heading(page, '2 choices before your dashboard')).toBeVisible()
+  await expect(page.locator('.schema-row h3')).toHaveText(['Order date', 'Revenue (EUR)'])
+  await expect(reviewAction(page)).toBeDisabled()
+  const choices = page.getByRole('checkbox', { name: 'Use 0 readable values; exclude 2 unreadable values' })
+  await expect(choices).toHaveCount(2)
+  await choices.nth(0).check()
+  await expect(reviewAction(page)).toBeDisabled()
+  await choices.nth(1).check()
+  await expect(reviewAction(page)).toBeEnabled()
+  await page.getByRole('button', { name: 'Undo change' }).press('Enter')
+  await expect(choices.nth(1)).not.toBeChecked()
+  await expect(reviewAction(page)).toBeDisabled()
+  await page.getByRole('combobox', { name: 'Date format', exact: true }).selectOption('dmy')
+  await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('dot')
+  await expect(heading(page, 'Ready for your dashboard')).toBeVisible()
+  await expect(page.getByText('2025-03-02', { exact: true })).toBeVisible()
+  await expect(page.getByText('€1,234.00', { exact: true })).toBeVisible()
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    await page.screenshot({ path: info.outputPath(`resolved-review-${width}.png`), fullPage: true })
+  }
+  await reviewAction(page).click()
+  await expect(page.locator('.featured-stat')).toContainText('€3,579.00')
+})
+
+test('requires a currency code for unspecified dollar amounts before analyzing', async ({ page }) => {
+  await page.goto('/#/import')
+  await upload(page, 'dollars.csv', 'Region,Amount\nWest,$10\nEast,$20')
+  await expect(reviewHeading(page)).toBeVisible()
+  await expect(reviewAction(page)).toBeDisabled()
+  await expect(page.getByText(/Choose a currency code or keep this column as text/)).toBeVisible()
+  await page.getByRole('combobox', { name: 'Currency for Amount' }).selectOption('CAD')
+  await expect(reviewAction(page)).toBeEnabled()
+  await reviewAction(page).click()
+  await expect(page.locator('.featured-stat')).toContainText('CA$30.00')
+})
+
+test('keeps Undo within the worksheet whose column settings it restores', async ({ page }) => {
+  const workbook = utils.book_new()
+  utils.book_append_sheet(workbook, utils.aoa_to_sheet([['Region', 'Revenue (EUR)'], ['West', 12.5]]), 'Revenue')
+  utils.book_append_sheet(workbook, utils.aoa_to_sheet([['SKU', 'Stock quantity'], ['A-1', 5]]), 'Inventory')
+  await page.goto('/#/import')
+  await upload(page, 'departments.xlsx', write(workbook, { type: 'buffer', bookType: 'xlsx' }))
+  await reviewAction(page).click()
+  await editColumns(page).click()
+  await showAllColumns(page)
+  await page.getByRole('combobox', { name: 'Type for Revenue (EUR)' }).selectOption('number')
+  await expect(page.getByRole('button', { name: 'Undo change' })).toBeVisible()
+  await page.getByRole('combobox', { name: 'Worksheet' }).selectOption('Inventory')
+  await expect(page.getByRole('button', { name: 'Undo change' })).toHaveCount(0)
+  await showAllColumns(page)
+  const stock = page.getByRole('combobox', { name: 'Type for Stock quantity' })
+  await stock.selectOption('text')
+  await page.getByRole('button', { name: 'Undo change' }).click()
+  await expect(stock).toHaveValue('number')
+  await expect(page.getByRole('button', { name: 'Undo change' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(heading(page, 'Revenue')).toBeVisible()
+  await expect(page.locator('.featured-stat')).toContainText('€12.50')
+})
+
+test('reopens the file, table search, filters and unapplied edits after switching and reload', async ({ page }) => {
+  await page.goto('/#/import')
+  await upload(page, 'monthly-sales.csv', sales)
+  await expect(heading(page, 'monthly-sales')).toBeVisible()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Value', exact: true }).selectOption('West')
+  await page.getByRole('button', { name: 'Apply filter' }).click()
+  await page.getByRole('button', { name: 'View results' }).click()
+  await page.getByRole('button', { name: 'Data table', exact: true }).click()
+  await page.getByRole('searchbox', { name: 'Search rows' }).fill('West')
+  await expect(page.getByText('2 matching rows', { exact: true })).toBeVisible()
+  await editColumns(page).click()
+  await showAllColumns(page)
+  await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('comma')
+  await page.goBack()
+  await expect(page.getByRole('link', { name: 'Resume column edits' })).toBeVisible()
+
+  await importLink(page).click()
+  await upload(page, 'costs.csv', 'Team,Amount\nOps,20\nDesign,30')
+  await expect(heading(page, 'costs')).toBeVisible()
+  await page.locator('.workspace-menu summary').click()
+  await page.locator('.workspace-choices').getByRole('button', { name: /monthly-sales/ }).click()
+  await expect(heading(page, 'monthly-sales')).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('searchbox', { name: 'Search rows' })).toHaveValue('West')
+  await expect(page.getByText('2 of 3 rows', { exact: true })).toBeVisible()
+  await page.locator('.export-menu summary').click()
+  const [download] = await Promise.all([page.waitForEvent('download'),
+    page.getByRole('button', { name: 'Table results (CSV)' }).click()])
+  const exported = (await readFile(await download.path(), 'utf8')).trim().split('\r\n')
+  expect(exported.slice(1)).toEqual(['2025-01-04,West,1200.5', '2025-01-06,West,300'])
+  await page.getByRole('link', { name: 'Resume column edits' }).click()
+  await expect(page.getByRole('combobox', { name: 'Number format', exact: true })).toHaveValue('comma')
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(editColumns(page)).toBeVisible()
+  await expect(page.getByRole('searchbox', { name: 'Search rows' })).toHaveValue('West')
+  await importLink(page).click()
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: 'Remove costs' }).click()
+  await expect(page.locator('.recent-work').getByRole('button', { name: /costs/ })).toHaveCount(0)
+  await page.reload()
+  await expect(page.locator('.recent-work').getByRole('button', { name: /^monthly-sales/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Remove costs' })).toHaveCount(0)
+})
+
+test('can cancel a real import and choose another file by keyboard', async ({ page }) => {
+  await page.goto('/#/import')
+  const lines = Array.from({ length: 100_000 }, (_, i) => `ROW-${i},West,${i},1,2,3,4,5,6,7`)
+  await upload(page, 'full-size.csv', ['Record ID,Region,Revenue,Units,A,B,C,D,E,F', ...lines].join('\n'))
+  await expect(heading(page, 'Preparing your dashboard')).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel', exact: true }).press('Enter')
+  await expect(page.getByRole('button', { name: 'Choose file' })).toBeFocused()
+  await expect(page.getByText('Import cancelled. You can choose another file.')).toBeVisible()
+  await upload(page, 'monthly-sales.csv', sales)
+  await expect(heading(page, 'monthly-sales')).toBeVisible()
+})
+
+test('keeps work available in the current tab when browser storage is blocked', async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window, 'indexedDB', { value: undefined }))
+  await page.goto('/#/import')
+  await upload(page, 'monthly-sales.csv', sales)
+  await expect(heading(page, 'monthly-sales')).toBeVisible()
+  await expect(page.getByText(/Keep this tab open to return to your work/)).toBeVisible()
+  await importLink(page).click()
+  await page.getByRole('button', { name: /^Team expenses/ }).click()
+  await expect(heading(page, 'Team expenses')).toBeVisible()
+  await page.locator('.workspace-menu summary').click()
+  await page.locator('.workspace-choices').getByRole('button', { name: /^monthly-sales/ }).click()
+  await expect(heading(page, 'monthly-sales')).toBeVisible()
+  await expect(page.locator('.featured-stat')).toContainText('$1,920.75')
+})

@@ -49,11 +49,13 @@ export type Column = {
   numberStyle?: NumberStyle
   dateOrder?: DateOrder
   percentScale?: 'points' | 'fraction'
+  confirmPercentScale?: boolean
   allowUnmarked?: boolean
   excludedUnmarked?: number
+  acceptedInterpretation?: string
 }
 
-export type SchemaEdit = { kind: Kind; unit?: string; percentScale?: 'points' | 'fraction'; assignUnmarked?: boolean }
+export type SchemaEdit = { kind: Kind; unit?: string; percentScale?: 'points' | 'fraction'; assignUnmarked?: boolean; acceptedInterpretation?: string }
 export type Edits = Record<number, SchemaEdit>
 export type Dataset = { columns: Column[]; rows: Cell[][] }
 
@@ -91,7 +93,7 @@ export function formatValue(value: Cell, column?: Column, compact = false): stri
   let formatter = valueFormats.get(key)
   if (!formatter) {
     formatter = new Intl.NumberFormat('en', {
-      style, currency, notation, maximumFractionDigits: digits,
+      style, currency: style === 'currency' ? currency : undefined, notation, maximumFractionDigits: digits,
     })
     valueFormats.set(key, formatter)
   }

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { Buffer } from 'node:buffer'
 import { expect, test } from '@playwright/test'
 import { utils, write } from '@e965/xlsx'
+import { editColumns, finishImport, reviewAction, reviewHeading, showAllColumns } from './import-flow'
 
 const filters = (page: import('@playwright/test').Page) => page.getByRole('button', { name: /^Filters/ })
 const operator = (page: import('@playwright/test').Page) => page.getByRole('combobox', { name: 'Operator', exact: true })
@@ -92,7 +93,7 @@ test('sales sample supports keyboard chart inspection, chart controls, AND filte
 test('CSV import validates files, reviews ambiguity, corrects types, and handles empty filtered results', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('link', { name: 'Start analyzing' }).click()
-  const browse = page.getByRole('button', { name: 'Browse files' })
+  const browse = page.getByRole('button', { name: 'Choose file' })
   const [chooser] = await Promise.all([page.waitForEvent('filechooser'), browse.click()])
   await chooser.setFiles({ name: 'invalid.xls', mimeType: 'application/octet-stream', buffer: Buffer.from('invalid') })
   await expect(page.getByRole('alert')).toContainText('Older .xls')
@@ -103,14 +104,15 @@ test('CSV import validates files, reviews ambiguity, corrects types, and handles
     mimeType: 'text/csv',
     buffer: Buffer.from('Order ID;Date;Revenue (EUR);Region;Completion %\n0041;02/01/2025;1.249,50;West;0,50\n0042;03/01/2025;-249,50;East;0,75\n0043;04/02/2025;2.000,00;West;50%'),
   })
-  await expect(page.getByRole('heading', { name: 'Review your columns' })).toBeFocused()
+  await expect(reviewHeading(page)).toBeFocused()
   await expect(page.getByText('3 invalid', { exact: true })).toBeVisible()
+  await showAllColumns(page)
   await page.getByRole('combobox', { name: 'Date format', exact: true }).selectOption('dmy')
   await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('comma')
   await page.getByLabel('Type for Order ID', { exact: true }).selectOption('category')
   await page.getByLabel('Percentage scale for Completion %').selectOption('fraction')
   await expect(page.getByText('3 invalid', { exact: true })).toBeHidden()
-  await page.getByRole('button', { name: 'Build dashboard' }).click()
+  await reviewAction(page).click()
   await expect(page.getByRole('heading', { name: 'eu-sales', exact: true })).toBeVisible()
   await expect(page.getByText('€3,000.00', { exact: true })).toBeVisible()
   await filters(page).click()
@@ -120,11 +122,12 @@ test('CSV import validates files, reviews ambiguity, corrects types, and handles
   await page.getByRole('button', { name: 'Apply filter' }).click()
   await expect(page.getByText('No rows match these filters')).toBeVisible()
   await expect(page.getByText('0 of 3 rows', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Clear filters' }).click()
+  await page.getByRole('button', { name: 'Clear all filters' }).click()
   await page.getByRole('button', { name: 'Data table' }).click()
   await expect(page.getByRole('cell', { name: '75%', exact: true })).toBeVisible()
   await expect(page.getByRole('cell', { name: '0041', exact: true })).toBeVisible()
   await page.getByRole('link', { name: 'Edit columns' }).click()
+  await showAllColumns(page)
   await expect(page.getByLabel('Type for Order ID', { exact: true })).toHaveValue('category')
   await page.getByRole('button', { name: 'Reset types' }).click()
   await expect(page.getByRole('combobox', { name: 'Date format', exact: true })).toHaveValue('auto')
@@ -137,21 +140,25 @@ test('workbook worksheet review and TSV drag-and-drop work in the static build',
   utils.book_append_sheet(book, utils.aoa_to_sheet([['Item', 'Units on hand'], ['Gloves', 19], ['Mittens', 5]]), 'Warehouse B')
   await page.goto('/#/import')
   await page.locator('input[type=file]').setInputFiles({ name: 'counts.xlsx', mimeType: 'application/octet-stream', buffer: write(book, { type: 'buffer', bookType: 'xlsx' }) })
+  await expect(reviewHeading(page)).toBeVisible()
+  await showAllColumns(page)
   await expect(page.locator('.example-pair > :first-child').filter({ hasText: /^Jacket$/ })).toBeVisible()
   await page.getByLabel('Worksheet').selectOption('Warehouse B')
   await expect(page.locator('.example-pair > :first-child').filter({ hasText: /^Gloves$/ })).toBeVisible()
   await expect(page.locator('.example-pair > :first-child').filter({ hasText: /^Mittens$/ })).toBeVisible()
-  await page.getByRole('button', { name: 'Build dashboard' }).click()
+  await reviewAction(page).click()
   await expect(page.getByRole('heading', { name: 'Warehouse B', exact: true })).toBeVisible()
   await expect(page.getByText('24', { exact: true })).toBeVisible()
-  await page.getByRole('link', { name: 'New import' }).click()
+  await page.getByRole('link', { name: 'Import', exact: true }).click()
   const transfer = await page.evaluateHandle(() => {
     const data = new DataTransfer()
     data.items.add(new File(['City\tRegistrations\nRabat\t23\nTangier\t12'], 'event.tsv', { type: 'text/tab-separated-values' }))
     return data
   })
   await page.locator('.drop-zone').dispatchEvent('drop', { dataTransfer: transfer })
-  await expect(page.getByRole('heading', { name: 'Review your columns' })).toBeVisible()
+  await expect(page.locator('.workspace')).toBeVisible()
+  await editColumns(page).click()
+  await showAllColumns(page)
   await expect(page.locator('.example-pair > :first-child').filter({ hasText: /^Rabat$/ })).toBeVisible()
   await expect(page.locator('.example-pair > :first-child').filter({ hasText: /^Tangier$/ })).toBeVisible()
   await expect(page.getByLabel('Type for Registrations')).toHaveValue('number')
@@ -171,10 +178,10 @@ test('mobile samples render distinct dashboards and the workspace fits 320px', a
   ]) {
     await page.getByRole('button', { name: new RegExp(title) }).click()
     await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible()
-    await expect(page.getByText(rows + ' rows', { exact: false }).first()).toBeVisible()
+    await expect(page.locator('.dataset-meta').getByText(rows + ' rows', { exact: false })).toBeVisible()
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
     if (heading.endsWith('over time')) await expect(page.getByRole('button', { name: 'Bar chart' })).toBeVisible()
-    await page.getByRole('link', { name: 'New import' }).click()
+    await page.getByRole('link', { name: 'Import', exact: true }).click()
   }
   await page.getByRole('button', { name: /Retail sales/ }).click()
   await page.setViewportSize({ width: 320, height: 750 })
@@ -182,6 +189,7 @@ test('mobile samples render distinct dashboards and the workspace fits 320px', a
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320)
   await filterValue(page).selectOption('East')
   await page.getByRole('button', { name: 'Apply filter' }).click()
+  await page.getByRole('button', { name: 'View results' }).click()
   await expect(page.getByRole('button', { name: 'Remove filter Region equals East' })).toBeVisible()
   await page.getByRole('button', { name: 'Remove filter Region equals East' }).click()
   await page.getByRole('button', { name: 'Data table' }).click()
@@ -226,7 +234,7 @@ test('edited OR filters drive KPIs, chart CSV and table, and dashboard image and
     name: 'filtered-report.csv', mimeType: 'text/csv',
     buffer: Buffer.from('Date,Region,Revenue (USD),Comments\n2025-02-02,West,42,First sale\n2025-02-05,East,13,Promo order\n2025-03-03,North,100,Ignore\n2025-03-07,East,,Estimate\n2025-03-10,South,-5,Return'),
   })
-  await page.getByRole('button', { name: 'Build dashboard' }).click()
+  await finishImport(page)
   const workspace = await page.locator('.workspace').boundingBox()
   expect(workspace?.width).toBeGreaterThan(1660)
   await filters(page).click()
@@ -281,7 +289,7 @@ test('a large spreadsheet stays editable and produces the same total after a sch
   await expect(page.getByText('11,000 invalid', { exact: true })).toBeVisible()
   await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('dot')
   await expect(page.getByRole('combobox', { name: 'Number format', exact: true })).toHaveValue('dot')
-  await page.getByRole('button', { name: 'Build dashboard' }).click()
+  await reviewAction(page).click()
   await expect(page.getByText('$13,574,000.00', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('11,000 of 11,000 rows', { exact: true })).toBeVisible()
 })

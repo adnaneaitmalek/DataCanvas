@@ -5,22 +5,14 @@ import { Brand, SampleGrid } from './shared'
 
 const steps = [
   { icon: FileSpreadsheet, title: 'Import a file', detail: 'Open a CSV, TSV, or Excel workbook from your device.' },
-  { icon: ScanLine, title: 'Review columns', detail: 'Check the detected dates, measures, and categories.' },
+  { icon: ScanLine, title: 'Check only what needs review', detail: 'DataCanvas detects column types and asks about uncertain values.' },
   { icon: ChartNoAxesCombined, title: 'Explore the data', detail: 'Filter your dashboard, inspect rows, and export results.' },
 ]
 
 export function Landing({ onSample }: { onSample: (sample: SampleId) => void }) {
   return <>
-    <header className="site-header">
-      <div className="site-header-inner">
-        <Brand />
-        <nav aria-label="Main navigation"><a href="#how-it-works">How it works</a><a href="#sample-data">Sample data</a></nav>
-        <a className="button secondary nav-action" href="#/import">Open workspace <ArrowRight size={15} /></a>
-        <a className="button secondary nav-samples" href="#sample-data">Sample data <ArrowDown size={15} /></a>
-      </div>
-    </header>
     <main id="main">
-      <section className="hero" data-enter>
+      <section className="hero">
         <div className="hero-copy">
           <span className="privacy-tag"><LockKeyhole size={14} /> Private by default</span>
           <h1 tabIndex={-1}>From spreadsheet<br />to <span>dashboard.</span></h1>
@@ -36,14 +28,14 @@ export function Landing({ onSample }: { onSample: (sample: SampleId) => void }) 
         </div>
       </section>
       <section id="how-it-works" className="landing-section method">
-        <div className="section-heading"><h2>How it works</h2><p>From a file on your device to a dashboard in three steps.</p></div>
+        <div className="section-heading"><h2 tabIndex={-1}>How it works</h2></div>
         <ol className="method-list">
           {steps.map(({ icon: Icon, title, detail }) => <li key={title}><span className="sample-icon"><Icon size={22} /></span><h3>{title}</h3><p>{detail}</p></li>)}
         </ol>
         <a href="#sample-data" className="quiet-link">See sample dashboards <ArrowDown size={15} /></a>
       </section>
       <section id="sample-data" className="landing-section landing-samples">
-        <div className="section-heading"><h2>Explore sample data</h2><p>Open any dataset to see what its dashboard can show you.</p></div>
+        <div className="section-heading"><h2 tabIndex={-1}>Explore sample data</h2><p>Open any dataset to see what its dashboard can show you.</p></div>
         <SampleGrid onSample={onSample} />
       </section>
     </main>

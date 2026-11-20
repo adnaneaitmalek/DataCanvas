@@ -2,14 +2,18 @@ import { readFile } from 'node:fs/promises'
 import { Buffer } from 'node:buffer'
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import { acceptExclusions, editColumns, reviewAction, showAllColumns, waitForImport } from './import-flow'
 
 async function importCsv(page: Page, data: string, name = 'release.csv') {
   await page.goto('/#/import')
   await page.locator('input[type=file]').setInputFiles({ name, mimeType: 'text/csv', buffer: Buffer.from(data) })
-  await expect(page.getByRole('heading', { name: 'Review your columns' })).toBeVisible()
+  await waitForImport(page)
+  if (await page.locator('.workspace').isVisible()) await editColumns(page).click()
+  await showAllColumns(page)
 }
 
-const build = (page: Page) => page.getByRole('button', { name: 'Build dashboard' })
+const build = reviewAction
+const applySchema = (page: Page) => page.getByRole('button', { name: 'Apply changes' })
 const filterToggle = (page: Page) => page.getByRole('button', { name: /^Filters/ })
 const conditionColumn = (page: Page) => page.getByRole('combobox', { name: 'Filter column' })
 const operator = (page: Page) => page.getByRole('combobox', { name: 'Operator' })
@@ -59,6 +63,7 @@ test('currency correction excludes conflicting and unmarked USD amounts and keep
   await page.getByRole('combobox', { name: 'Type for Revenue (USD)' }).selectOption('currency')
   await page.getByRole('combobox', { name: 'Currency for Revenue (USD)' }).selectOption('EUR')
   await expect(page.getByText('1 unmarked amount is excluded because the source column declares USD.')).toBeVisible()
+  await acceptExclusions(page)
   await build(page).click()
   await expect(page.locator('.stat-card').getByText('€30.00', { exact: true })).toBeVisible()
   await expect(page.getByRole('combobox', { name: 'Metric', exact: true }).locator('option:checked')).toHaveText('Revenue (EUR)')
@@ -78,9 +83,11 @@ test('currency correction excludes conflicting and unmarked USD amounts and keep
   const source = await download(page, 'Table results (CSV)')
   expect((await readFile(await source.path(), 'utf8')).trim()).toBe('Region,Revenue (USD)\r\nEast,EUR 10\r\nWest,EUR 20')
   await page.getByRole('link', { name: 'Edit columns' }).click()
+  await showAllColumns(page)
   await page.getByRole('checkbox', { name: 'Treat unmarked amounts as EUR' }).check()
   await expect(schemaRow(page, 'Revenue (USD)').getByText('€700.00', { exact: true })).toBeVisible()
-  await build(page).click()
+  await acceptExclusions(page)
+  await applySchema(page).click()
   await expect(page.getByRole('button', { name: 'Confirm export scope' })).toBeVisible()
   await tab(page, 'Overview').click()
   await expect(page.locator('.stat-card').getByText('€730.00', { exact: true })).toBeVisible()
@@ -105,10 +112,11 @@ test('review and browser history preserve analysis scope, while conflicting chan
   await expect(page.getByRole('searchbox', { name: 'Search rows' })).toHaveValue('ORD-')
   await expect(page.getByRole('columnheader', { name: 'Revenue (USD)' })).toHaveAttribute('aria-sort', 'ascending')
   await page.getByRole('link', { name: 'Edit columns' }).click()
-  await build(page).click()
+  await showAllColumns(page)
+  await applySchema(page).click()
   await expect(tab(page, 'Data table')).toHaveAttribute('aria-pressed', 'true')
   await page.goBack()
-  await expect(page.getByRole('heading', { name: 'Review your columns' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'From spreadsheet to dashboard.' })).toBeVisible()
   await page.goForward()
   await expect(page.getByRole('searchbox', { name: 'Search rows' })).toHaveValue('ORD-')
   const after = await download(page, 'Table results (CSV)')
@@ -121,8 +129,9 @@ test('review and browser history preserve analysis scope, while conflicting chan
   await expect(page.getByRole('button', { name: 'Bar chart' })).toHaveAttribute('aria-pressed', 'true')
 
   await page.getByRole('link', { name: 'Edit columns' }).click()
+  await showAllColumns(page)
   await page.getByRole('combobox', { name: 'Type for Region' }).selectOption('text')
-  await build(page).click()
+  await applySchema(page).click()
   await expect(page.getByText('Column changes removed a filter.')).toBeVisible()
   await expect(page.locator('.scope-notice').getByText('Region equals West')).toBeVisible()
   await page.locator('.export-menu summary').click()
@@ -136,11 +145,9 @@ test('review and browser history preserve analysis scope, while conflicting chan
   await page.locator('.export-menu summary').click()
   await expect(page.getByRole('button', { name: 'Table results (CSV)' })).toBeEnabled()
   await page.reload()
-  await expect(page).toHaveURL(/#\/import$/)
-  await expect(page.getByText('Analysis lives in this tab’s memory', { exact: false })).toBeVisible()
-  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Reopen spreadsheet' }).click()])
-  await chooser.setFiles({ name: 'reopened.csv', mimeType: 'text/csv', buffer: Buffer.from('Region,Revenue\nWest,21') })
-  await expect(page.getByRole('heading', { name: 'Review your columns' })).toBeVisible()
+  await expect(page).toHaveURL(/#\/dashboard$/)
+  await expect(page.getByRole('searchbox', { name: 'Search rows' })).toHaveValue('ORD-')
+  await expect(page.getByRole('button', { name: 'Confirm export scope' })).toHaveCount(0)
 })
 
 test('resetting or leaving a schema draft preserves the valid filter and exported rows', async ({ page }) => {
@@ -155,14 +162,17 @@ test('resetting or leaving a schema draft preserves the valid filter and exporte
   const expected = (await readFile(await before.path(), 'utf8')).trim()
   expect(expected).toBe('Region,Revenue (EUR)\r\nEast,25.5')
 
-  for (const leave of ['apply', 'back']) {
+  for (const leave of ['apply', 'cancel', 'back']) {
     await page.getByRole('link', { name: 'Edit columns' }).click()
+    await showAllColumns(page)
     await page.getByRole('combobox', { name: 'Number format', exact: true }).selectOption('comma')
     await expect(schemaRow(page, 'Revenue (EUR)').getByText('2 invalid')).toBeVisible()
     if (leave === 'apply') {
       await page.getByRole('button', { name: 'Reset types' }).click()
       await expect(schemaRow(page, 'Revenue (EUR)').getByText('€25.50', { exact: true })).toBeVisible()
-      await build(page).click()
+      await applySchema(page).click()
+    } else if (leave === 'cancel') {
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
     } else {
       await page.goBack()
     }
@@ -173,19 +183,18 @@ test('resetting or leaving a schema draft preserves the valid filter and exporte
   }
 })
 
-test('history cannot open a replacement dataset under an earlier dashboard entry', async ({ page }) => {
+test('browser history reopens each dataset under its original entry', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'Try sample data' }).click()
   await expect(page.getByRole('heading', { name: 'Retail sales', exact: true })).toBeVisible()
-  await page.getByRole('link', { name: 'New import' }).click()
+  await page.getByRole('link', { name: 'Import', exact: true }).click()
   await page.getByRole('button', { name: /^Warehouse inventory/ }).click()
   await expect(page.getByRole('heading', { name: 'Warehouse inventory', exact: true })).toBeVisible()
   await page.goBack()
   await expect(page.getByRole('heading', { name: 'Import a spreadsheet' })).toBeVisible()
   await page.goBack()
-  await expect(page.getByText('This workspace was replaced.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Retail sales', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Warehouse inventory', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Reopen spreadsheet' })).toBeVisible()
   await page.goForward()
   await expect(page.getByRole('heading', { name: 'Import a spreadsheet' })).toBeVisible()
   await page.goForward()
@@ -251,7 +260,7 @@ test('distinguishes missing and literal chart groups and reserves both time endp
   await build(page).click()
   await expect(page.locator('.category-bars li').filter({ has: page.getByText('Missing data', { exact: true }) })).toHaveText('Missing data20')
   await expect(page.locator('.category-bars li').filter({ has: page.getByText('(Missing)', { exact: true }) })).toHaveText('(Missing)10')
-  await page.getByRole('link', { name: 'New import' }).click()
+  await page.getByRole('link', { name: 'Import', exact: true }).click()
   await page.getByRole('button', { name: /Retail sales/ }).click()
   await expect(page.locator('.trend-panel svg text').filter({ hasText: /^Jan$/ })).toBeVisible()
   await expect(page.locator('.trend-panel svg text').filter({ hasText: /^Jun$/ })).toBeVisible()

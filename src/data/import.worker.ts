@@ -4,7 +4,7 @@ import type { Dataset, Delimiter, Edits, Settings, Source } from './model'
 
 export type WorkRequest = { kind: 'import'; file: File; sheet?: string; delimiter?: Delimiter; edits: Edits; settings: Settings } |
   { kind: 'profile'; source: Source; edits: Edits; settings: Settings }
-export type WorkResult = { error: string } | { source?: Source; dataset: Dataset }
+export type WorkResult = { error: string } | { progress: string } | { source?: Source; dataset: Dataset }
 
 self.onmessage = async (event: MessageEvent<WorkRequest>) => {
   try {
@@ -13,6 +13,7 @@ self.onmessage = async (event: MessageEvent<WorkRequest>) => {
       self.postMessage({ dataset: profile(job.source, job.edits, job.settings) } satisfies WorkResult)
     } else {
       const source = await readSource(job.file, job.sheet, job.delimiter)
+      self.postMessage({ progress: 'Checking columns' } satisfies WorkResult)
       self.postMessage({ source, dataset: profile(source, job.edits, job.settings) } satisfies WorkResult)
     }
   } catch (error) {

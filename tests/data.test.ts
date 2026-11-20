@@ -6,6 +6,7 @@ import { filterRows, parseFilter } from '../src/data/filters'
 import type { Filter } from '../src/data/filters'
 import { parseDate, parseNumber, profile } from '../src/data/infer'
 import { readDelimited, readSource } from '../src/data/import'
+import { importReview, interpretationKey } from '../src/data/importReview'
 import { defaultSettings, formatValue, limits, sourceValue, validateFile } from '../src/data/model'
 import { loadSample, samples } from '../src/data/samples'
 import { readWorkbook } from '../src/data/workbook'
@@ -15,6 +16,41 @@ import { initialAnalysis, reconcileAnalysis } from '../src/data/analysisState'
 import { columnLabel } from '../src/data/currency'
 
 describe('spreadsheet import', () => {
+  it('opens reliable data directly and surfaces uncertain interpretation, even when inference falls back to text', () => {
+    const safe = readDelimited('Date,Region,Revenue (EUR)\n2025-01-02,West,12.5\n2025-01-03,East,25\n2025-01-04,West,', 'safe.csv')
+    expect(importReview(safe, profile(safe))).toMatchObject({ required: false, blocked: false })
+
+    const tricky = readDelimited('Order date;Revenue;Completion %;Spend\n02/03/2025;12;0.25;USD 8\n04/05/2025;unknown;0.5;EUR 9', 'tricky.csv')
+    const draft = profile(tricky)
+    expect(importReview(tricky, draft)).toMatchObject({ required: true, blocked: true, percentScale: true })
+    expect(importReview(tricky, draft).columns.map(column => column.name)).toEqual(['Order date', 'Revenue', 'Completion %', 'Spend'])
+    const fixed = profile(tricky, { 2: { kind: 'percent', percentScale: 'fraction' } }, { dateOrder: 'dmy', numberStyle: 'auto' })
+    expect(importReview(tricky, fixed)).toMatchObject({ required: true, blocked: true })
+    expect(fixed.rows[0].slice(0, 3)).toEqual(['2025-03-02', '12', 25])
+  })
+  it('requires an explicit exclusion and invalidates it after the interpretation changes', () => {
+    const source = readDelimited('Date;Revenue (EUR)\n02/03/2025;1,234\n04/05/2025;2,345', 'uncertain.csv')
+    const original = profile(source)
+    expect(importReview(source, original).decisions).toHaveLength(2)
+    const edits = Object.fromEntries(original.columns.map(column => [column.index, {
+      kind: column.kind, unit: column.unit, acceptedInterpretation: interpretationKey(column),
+    }]))
+    expect(importReview(source, profile(source, edits)).blocked).toBe(false)
+    const changed = profile(source, edits, { dateOrder: 'dmy', numberStyle: 'comma' })
+    expect(changed.rows[0]).toEqual(['2025-03-02', 1.234])
+    expect(importReview(source, changed).blocked).toBe(false)
+    const mixed = readDelimited('Revenue (EUR)\n12\nwrong', 'mixed.csv')
+    const row = profile(mixed).columns[0]
+    const accepted = { 0: { kind: row.kind, unit: row.unit, acceptedInterpretation: interpretationKey(row) } }
+    expect(importReview(mixed, profile(mixed, accepted)).blocked).toBe(false)
+    expect(importReview(mixed, profile(mixed, accepted, { dateOrder: 'auto', numberStyle: 'comma' })).blocked).toBe(true)
+    const dollars = readDelimited('Revenue\n$12\n$15', 'dollars.csv')
+    expect(importReview(dollars, profile(dollars)).blocked).toBe(true)
+    expect(formatValue(12, profile(dollars).columns[0])).toBe('$12')
+    const canadian = profile(dollars, { 0: { kind: 'currency', unit: 'CAD' } })
+    expect(importReview(dollars, canadian).blocked).toBe(false)
+    expect(canadian.rows).toEqual([[12], [15]])
+  })
   it('keeps quoted commas and multiline cells while reporting malformed rows', () => {
     const source = readDelimited('\uFEFFDate,Region,Revenue,Note\r\n2025-01-02,West,24,"Meet, greet\r\nand sell"\r\n2025-01-03,East,30\r\n2025-01-04,West,42,OK,extra\r\n,,,' + '\r\n', 'orders.csv')
     expect(source.rows).toEqual([
